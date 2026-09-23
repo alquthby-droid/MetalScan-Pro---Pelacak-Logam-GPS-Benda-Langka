@@ -1,0 +1,1134 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useEffect, useState, useRef, useCallback } from 'react';
+import confetti from 'canvas-confetti';
+import {
+  Compass,
+  MapPin,
+  Activity,
+  ListFilter,
+  Volume2,
+  VolumeX,
+  Settings,
+  BookOpen,
+  Sparkles,
+  Zap,
+  Sliders,
+  CheckCircle2,
+  AlertTriangle,
+  RotateCcw,
+  BarChart3,
+  Camera,
+  Flashlight,
+  Battery,
+  BatteryCharging,
+  BatteryWarning,
+  Leaf,
+} from 'lucide-react';
+
+import {
+  MagneticReading,
+  MetalFinding,
+  DetectorSettings,
+  GPSLocation,
+  BatteryState,
+} from './types/detector';
+import { sensorManager, SensorManager } from './services/sensorManager';
+import { audioService } from './services/audioSynthesizer';
+import { proximityPulseService } from './services/proximityPulse';
+import { batteryManager } from './services/batteryManager';
+import { GaugeMeter } from './components/GaugeMeter';
+import { WaveformChart } from './components/WaveformChart';
+import { RadarScanner } from './components/RadarScanner';
+import { FindingsMap } from './components/FindingsMap';
+import { FindingsList } from './components/FindingsList';
+import { FindingsDistributionChart } from './components/FindingsDistributionChart';
+import { ARMetalFinder } from './components/ARMetalFinder';
+import { SimulationControls } from './components/SimulationControls';
+import { DetectorSettingsModal } from './components/DetectorSettingsModal';
+import { RareItemGuideModal } from './components/RareItemGuideModal';
+import { ExportFindingsModal } from './components/ExportFindingsModal';
+import { GeminiAnalysisModal } from './components/GeminiAnalysisModal';
+import { GeminiHotspotsModal } from './components/GeminiHotspotsModal';
+import { GeminiFindingAnalysis, GeminiExcavationHotspot, MetalCategory, DriftMonitorState } from './types/detector';
+import { driftMonitorService } from './services/driftMonitor';
+import { CalibrationDriftModal } from './components/CalibrationDriftModal';
+import { CalibrationDriftBanner } from './components/CalibrationDriftBanner';
+
+const DEFAULT_SETTINGS: DetectorSettings = {
+  autoSaveEnabled: true,
+  autoSaveThreshold: 90.0, // µT
+  soundEnabled: true,
+  soundVolume: 0.6,
+  vibrationEnabled: true,
+  proximityPulseEnabled: true,
+  proximityPulseThreshold: 75.0, // µT
+  sensitivity: 3,
+  baselineOffset: 48.0,
+  detectionMode: 'all_metal',
+  audioMode: 'tone',
+  isSimulated: false,
+  batterySaverEnabled: true,
+  batterySaverThreshold: 20,
+  forceBatterySaver: false,
+  driftMonitorEnabled: true,
+  driftAlertThreshold: 5.0,
+  driftSoundAlertEnabled: false,
+};
+
+const SEED_FINDINGS: MetalFinding[] = [
+  {
+    id: 'seed-1',
+    timestamp: Date.now() - 1000 * 60 * 35,
+    lat: -6.2088 + 0.0012,
+    lng: 106.8456 + 0.0008,
+    accuracy: 3.5,
+    magneticStrength: 154.2,
+    netStrength: 106.2,
+    category: 'gold',
+    name: 'Emas / Logam Mulia Berharga',
+    depthEstimateCm: 11,
+    note: 'Anomali terdeteksi di kedalaman dangkal tanah pasir.',
+    autoSaved: true,
+  },
+  {
+    id: 'seed-2',
+    timestamp: Date.now() - 1000 * 60 * 90,
+    lat: -6.2088 - 0.0015,
+    lng: 106.8456 + 0.0018,
+    accuracy: 4.0,
+    magneticStrength: 198.6,
+    netStrength: 150.6,
+    category: 'meteorite',
+    name: 'Meteorit / Anomali Feromagnetik Langka',
+    depthEstimateCm: 7,
+    note: 'Batu berpori berat dengan tarikan magnetik kuat.',
+    autoSaved: true,
+  },
+  {
+    id: 'seed-3',
+    timestamp: Date.now() - 1000 * 60 * 180,
+    lat: -6.2088 + 0.0005,
+    lng: 106.8456 - 0.0022,
+    accuracy: 5.0,
+    magneticStrength: 78.4,
+    netStrength: 30.4,
+    category: 'bronze',
+    name: 'Perunggu / Kuningan Kuno',
+    depthEstimateCm: 18,
+    note: 'Diduga pecahan uang koin kuno / artefak perunggu.',
+    autoSaved: false,
+  },
+];
+
+export default function App() {
+  const [activeTab, setActiveTab] = useState<'detector' | 'map' | 'list'>('detector');
+  const [currentReading, setCurrentReading] = useState<MagneticReading>({
+    x: 0,
+    y: 0,
+    z: 48,
+    total: 48,
+    netTotal: 0,
+    timestamp: Date.now(),
+  });
+  const [baseline, setBaseline] = useState<number>(48.0);
+  const [userLocation, setUserLocation] = useState<GPSLocation | null>(null);
+  const [sensorStatus, setSensorStatus] = useState<{
+    supported: boolean;
+    type: 'hardware' | 'orientation_fallback' | 'simulation';
+    message: string;
+  }>({
+    supported: false,
+    type: 'simulation',
+    message: 'Memulai sensor...',
+  });
+
+  const [settings, setSettings] = useState<DetectorSettings>(() => {
+    try {
+      const saved = localStorage.getItem('metalscan_settings');
+      if (saved) return { ...DEFAULT_SETTINGS, ...JSON.parse(saved) };
+    } catch {
+      // ignore
+    }
+    return DEFAULT_SETTINGS;
+  });
+
+  const [findings, setFindings] = useState<MetalFinding[]>(() => {
+    try {
+      const saved = localStorage.getItem('metalscan_findings');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {
+      // ignore
+    }
+    return SEED_FINDINGS;
+  });
+
+  const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
+  const [isGuideOpen, setIsGuideOpen] = useState<boolean>(false);
+  const [isExportModalOpen, setIsExportModalOpen] = useState<boolean>(false);
+  const [analyzingFinding, setAnalyzingFinding] = useState<MetalFinding | null>(null);
+  const [isHotspotsModalOpen, setIsHotspotsModalOpen] = useState<boolean>(false);
+  const [showMapStats, setShowMapStats] = useState<boolean>(true);
+  const [showARView, setShowARView] = useState<boolean>(false);
+  const [isStrobing, setIsStrobing] = useState<boolean>(false);
+  const [strobeIntensity, setStrobeIntensity] = useState<number>(0);
+  const [torchStatus, setTorchStatus] = useState<{ supported: boolean; message: string }>({
+    supported: false,
+    message: '',
+  });
+  const [batteryState, setBatteryState] = useState<BatteryState>(() => batteryManager.getState());
+  const [driftState, setDriftState] = useState<DriftMonitorState>(() => driftMonitorService.getState());
+  const [isDriftModalOpen, setIsDriftModalOpen] = useState<boolean>(false);
+  const [isDriftBannerDismissed, setIsDriftBannerDismissed] = useState<boolean>(false);
+  const [recentNotification, setRecentNotification] = useState<{
+    title: string;
+    message: string;
+    category: string;
+    time: number;
+  } | null>(null);
+
+  // Auto-save cooldown and spike tracking refs
+  const lastAutoSaveTimeRef = useRef<number>(0);
+  const isSpikeActiveRef = useRef<boolean>(false);
+  const spikePeakReadingRef = useRef<MagneticReading | null>(null);
+  const latestLocationRef = useRef<GPSLocation | null>(null);
+
+  // Persist findings
+  useEffect(() => {
+    try {
+      localStorage.setItem('metalscan_findings', JSON.stringify(findings));
+    } catch {
+      // ignore
+    }
+  }, [findings]);
+
+  // Persist settings
+  useEffect(() => {
+    try {
+      localStorage.setItem('metalscan_settings', JSON.stringify(settings));
+    } catch {
+      // ignore
+    }
+  }, [settings]);
+
+  // Initialize Battery Manager & Power Save Watcher
+  useEffect(() => {
+    let unsubBattery: (() => void) | null = null;
+
+    batteryManager.init().then(() => {
+      const initial = batteryManager.evaluate(
+        settings.batterySaverEnabled ?? true,
+        settings.batterySaverThreshold ?? 20,
+        settings.forceBatterySaver ?? false
+      );
+      setBatteryState(initial);
+      sensorManager.setPowerSaveMode(initial.isPowerSaveActive, initial.isScreenOff);
+    });
+
+    unsubBattery = batteryManager.subscribe((st) => {
+      setBatteryState(st);
+      sensorManager.setPowerSaveMode(st.isPowerSaveActive, st.isScreenOff);
+    });
+
+    return () => {
+      if (unsubBattery) unsubBattery();
+      batteryManager.destroy();
+    };
+  }, []);
+
+  // Update battery evaluation whenever power saving settings change
+  useEffect(() => {
+    const st = batteryManager.evaluate(
+      settings.batterySaverEnabled ?? true,
+      settings.batterySaverThreshold ?? 20,
+      settings.forceBatterySaver ?? false
+    );
+    setBatteryState(st);
+    sensorManager.setPowerSaveMode(st.isPowerSaveActive, st.isScreenOff);
+  }, [settings.batterySaverEnabled, settings.batterySaverThreshold, settings.forceBatterySaver]);
+
+  // Initialize Sensors & Proximity Pulse
+  useEffect(() => {
+    let unsubscribe: (() => void) | null = null;
+    let unsubStrobe: (() => void) | null = null;
+
+    const setup = async () => {
+      const res = await sensorManager.initSensor(false);
+      setSensorStatus(res);
+      setBaseline(sensorManager.getBaseline());
+
+      unsubscribe = sensorManager.subscribe((reading) => {
+        setCurrentReading(reading);
+        if (settings.driftMonitorEnabled ?? true) {
+          driftMonitorService.updateReading(reading, isSpikeActiveRef.current);
+        }
+      });
+
+      // Listen for visual strobe state for UI screen flash
+      unsubStrobe = proximityPulseService.onStrobeChange((strobing, intensity) => {
+        setIsStrobing(strobing);
+        setStrobeIntensity(intensity);
+      });
+    };
+
+    setup();
+
+    return () => {
+      if (unsubscribe) unsubscribe();
+      if (unsubStrobe) unsubStrobe();
+      sensorManager.destroy();
+      audioService.stopContinuousTone();
+      proximityPulseService.destroy();
+    };
+  }, []);
+
+  // Calibration Drift Monitor Watcher & Threshold Synchronization
+  useEffect(() => {
+    driftMonitorService.setThreshold(settings.driftAlertThreshold || 5.0);
+
+    const unsubDrift = driftMonitorService.subscribe((state) => {
+      setDriftState(state);
+
+      // Play subtle warning audio if noise is high and sound alert is toggled on
+      if (
+        settings.driftSoundAlertEnabled &&
+        (state.status === 'HIGH_NOISE' || state.status === 'SEVERE_DRIFT')
+      ) {
+        audioService.playAlertBeep(false);
+      }
+    });
+
+    return () => {
+      unsubDrift();
+    };
+  }, [settings.driftAlertThreshold, settings.driftSoundAlertEnabled, settings.driftMonitorEnabled]);
+
+  // Initialize GPS Geolocation Watcher (Automatically reduced polling & low power mode when battery is low or screen is off)
+  useEffect(() => {
+    if (!('geolocation' in navigator)) return;
+
+    const isEco = batteryState.isPowerSaveActive;
+    const isScreenHidden = batteryState.isScreenOff;
+
+    const watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        const loc: GPSLocation = {
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          accuracy: pos.coords.accuracy,
+          altitude: pos.coords.altitude,
+          speed: pos.coords.speed,
+          heading: pos.coords.heading,
+          timestamp: pos.timestamp,
+        };
+        setUserLocation(loc);
+        latestLocationRef.current = loc;
+      },
+      (err) => {
+        console.warn('Geolocation watch error:', err.message);
+      },
+      {
+        // When in power-saving mode: disable power-draining GNSS satellite chip (fallback to cell/wifi)
+        enableHighAccuracy: !isEco,
+        // Cache positions up to 30s-60s to avoid waking hardware radio constantly
+        maximumAge: isScreenHidden ? 60000 : isEco ? 30000 : 3000,
+        timeout: isEco ? 25000 : 10000,
+      }
+    );
+
+    return () => {
+      navigator.geolocation.clearWatch(watchId);
+    };
+  }, [batteryState.isPowerSaveActive, batteryState.isScreenOff]);
+
+  // Update Audio feedback, Vibration & Proximity Pulse Flash LED based on magnetic reading
+  useEffect(() => {
+    // Only synthesize audio when on detector tab or if background allowed
+    audioService.updateTone(
+      currentReading.netTotal,
+      settings.audioMode,
+      settings.soundEnabled,
+      settings.soundVolume
+    );
+
+    // Vibration pulse if strong signal
+    if (
+      settings.vibrationEnabled &&
+      currentReading.total >= settings.autoSaveThreshold &&
+      'vibrate' in navigator
+    ) {
+      try {
+        navigator.vibrate(40);
+      } catch {
+        // ignore
+      }
+    }
+
+    // Proximity Pulse (Flash LED / Visual Strobe) update
+    proximityPulseService.updateSignal(
+      currentReading.netTotal,
+      currentReading.total,
+      settings.proximityPulseThreshold || 75.0,
+      settings.proximityPulseEnabled ?? true
+    );
+  }, [currentReading, settings]);
+
+  // Auto-Save Trigger Detection Logic
+  useEffect(() => {
+    if (!settings.autoSaveEnabled) return;
+
+    const now = Date.now();
+    const threshold = settings.autoSaveThreshold;
+
+    if (currentReading.total >= threshold) {
+      // Start or update spike
+      if (!isSpikeActiveRef.current) {
+        isSpikeActiveRef.current = true;
+        spikePeakReadingRef.current = currentReading;
+      } else {
+        if (
+          spikePeakReadingRef.current &&
+          currentReading.total > spikePeakReadingRef.current.total
+        ) {
+          spikePeakReadingRef.current = currentReading;
+        }
+      }
+    } else {
+      // Spike has fallen back down below threshold
+      if (isSpikeActiveRef.current) {
+        isSpikeActiveRef.current = false;
+        const peak = spikePeakReadingRef.current;
+
+        // Check cooldown (min 8 seconds between auto-saves)
+        if (peak && now - lastAutoSaveTimeRef.current > 8000) {
+          lastAutoSaveTimeRef.current = now;
+          recordFinding(peak, true);
+        }
+      }
+    }
+  }, [currentReading, settings.autoSaveEnabled, settings.autoSaveThreshold]);
+
+  // Record a finding to state and map
+  const recordFinding = useCallback(
+    (reading: MagneticReading, isAutoSaved: boolean = false) => {
+      const loc = latestLocationRef.current || userLocation || {
+        lat: -6.2088 + (Math.random() - 0.5) * 0.003,
+        lng: 106.8456 + (Math.random() - 0.5) * 0.003,
+        accuracy: 8,
+        altitude: null,
+        speed: null,
+        heading: null,
+        timestamp: Date.now(),
+      };
+
+      const classification = SensorManager.classifyMetal(reading.netTotal, reading.total);
+
+      const newFinding: MetalFinding = {
+        id: `finding-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        timestamp: Date.now(),
+        lat: loc.lat,
+        lng: loc.lng,
+        accuracy: loc.accuracy || 5,
+        magneticStrength: reading.total,
+        netStrength: reading.netTotal,
+        category: classification.category,
+        name: classification.name,
+        depthEstimateCm: classification.depthCm,
+        note: isAutoSaved
+          ? `Auto-rekam GPS saat mendeteksi fluks medan ${reading.total.toFixed(1)} µT`
+          : 'Ditandai manual oleh pengguna',
+        autoSaved: isAutoSaved,
+      };
+
+      setFindings((prev) => [newFinding, ...prev]);
+
+      // Sound chime and celebratory visual alert
+      audioService.playAlertBeep(true);
+      if ('vibrate' in navigator && settings.vibrationEnabled) {
+        try {
+          navigator.vibrate([100, 50, 200]);
+        } catch {
+          // ignore
+        }
+      }
+
+      try {
+        confetti({
+          particleCount: 35,
+          spread: 60,
+          origin: { y: 0.8 },
+          colors: ['#eab308', '#38bdf8', '#a855f7', '#10b981'],
+        });
+      } catch {
+        // ignore
+      }
+
+      setRecentNotification({
+        title: isAutoSaved ? 'Auto-Simpan GPS Berhasil!' : 'Titik Temuan Disimpan!',
+        message: `${classification.name} (${reading.total.toFixed(1)} µT) dicatat pada peta.`,
+        category: classification.category,
+        time: Date.now(),
+      });
+
+      // Clear toast after 5s
+      setTimeout(() => {
+        setRecentNotification(null);
+      }, 5000);
+    },
+    [userLocation, settings.vibrationEnabled]
+  );
+
+  // Manual Pin Finding Button
+  const handleManualPin = () => {
+    audioService.unlockAudio();
+    recordFinding(currentReading, false);
+  };
+
+  // Tare Zero Calibration
+  const handleTareZero = () => {
+    audioService.unlockAudio();
+    const newBase = sensorManager.calibrateBaseline();
+    setBaseline(newBase);
+    driftMonitorService.recordCalibration(newBase);
+    setIsDriftBannerDismissed(false);
+    setRecentNotification({
+      title: 'Tara Nol Berhasil!',
+      message: `Nilai dasar bumi dikalibrasi ke ${newBase.toFixed(1)} µT. Anomali logam sekarang terisolasi bersih.`,
+      category: 'calibrated',
+      time: Date.now(),
+    });
+    setTimeout(() => setRecentNotification(null), 4000);
+  };
+
+  const handleDeleteFinding = (id: string) => {
+    setFindings((prev) => prev.filter((f) => f.id !== id));
+  };
+
+  const handleClearAllFindings = () => {
+    setFindings([]);
+  };
+
+  const handleUpdateNote = (id: string, note: string) => {
+    setFindings((prev) =>
+      prev.map((f) => (f.id === id ? { ...f, note } : f))
+    );
+  };
+
+  const handleApplyGeminiAnalysis = (
+    findingId: string,
+    analysis: GeminiFindingAnalysis,
+    updatedName?: string,
+    updatedCategory?: MetalCategory,
+    updatedNote?: string
+  ) => {
+    setFindings((prev) =>
+      prev.map((f) => {
+        if (f.id === findingId) {
+          return {
+            ...f,
+            name: updatedName || f.name,
+            category: updatedCategory || f.category,
+            note: updatedNote !== undefined ? updatedNote : f.note,
+            aiAnalysis: analysis,
+          };
+        }
+        return f;
+      })
+    );
+    setRecentNotification({
+      title: 'Analisis AI Diterapkan!',
+      message: `Rekomendasi artefak "${analysis.artifactName}" berhasil diperbarui.`,
+      category: 'ai_updated',
+      time: Date.now(),
+    });
+    setTimeout(() => setRecentNotification(null), 4000);
+  };
+
+  const handlePinHotspotToFindings = (hotspot: GeminiExcavationHotspot) => {
+    const newFinding: MetalFinding = {
+      id: `hotspot_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      timestamp: Date.now(),
+      lat: hotspot.lat,
+      lng: hotspot.lng,
+      accuracy: hotspot.radiusMeters,
+      magneticStrength: 78.5,
+      netStrength: 30.5,
+      category: 'unknown',
+      name: `★ AI: ${hotspot.name}`,
+      depthEstimateCm: hotspot.estimatedDepthCm,
+      note: `[Prediksi AI: Prioritas ${hotspot.priority} - Sasaran: ${hotspot.expectedTargetType}] ${hotspot.tacticalRationale} | Setelan: ${hotspot.suggestedDetectorSettings}`,
+      autoSaved: false,
+    };
+    setFindings((prev) => [newFinding, ...prev]);
+    setRecentNotification({
+      title: 'Hotspot AI Disematkan!',
+      message: `${hotspot.name} berhasil ditambahkan ke peta navigasi GPS.`,
+      category: 'hotspot_pinned',
+      time: Date.now(),
+    });
+    setTimeout(() => setRecentNotification(null), 4000);
+  };
+
+  const toggleProximityPulse = async () => {
+    const nextState = !(settings.proximityPulseEnabled ?? true);
+    if (nextState) {
+      const res = await proximityPulseService.initTorch();
+      setTorchStatus(res);
+    }
+    setSettings((prev) => ({ ...prev, proximityPulseEnabled: nextState }));
+  };
+
+  return (
+    <div
+      className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans max-w-2xl mx-auto border-x border-slate-900 shadow-2xl relative"
+      onClick={() => audioService.unlockAudio()}
+    >
+      {/* Proximity Pulse Night Vision Screen Strobe / Visual Alarm Backdrop Overlay */}
+      {isStrobing && (
+        <div
+          className="fixed inset-0 pointer-events-none z-[999] transition-opacity duration-75 mix-blend-screen"
+          style={{
+            backgroundColor: '#fbbf24',
+            opacity: Math.max(0.15, Math.min(0.7, strobeIntensity * 0.7)),
+            boxShadow: 'inset 0 0 100px rgba(251, 191, 36, 0.9)',
+          }}
+        />
+      )}
+
+      {/* Android Native-Style Header Bar */}
+      <header className="sticky top-0 z-50 bg-slate-950/90 backdrop-blur-xl border-b border-slate-800/80 px-4 py-3 flex items-center justify-between">
+        <div className="flex items-center gap-2.5">
+          <div className="w-9 h-9 rounded-2xl bg-gradient-to-tr from-cyan-600 to-emerald-500 flex items-center justify-center shadow-lg shadow-cyan-900/30 text-white font-black text-sm">
+            <Sparkles className="w-5 h-5 animate-pulse" />
+          </div>
+          <div>
+            <div className="flex items-center gap-1.5">
+              <h1 className="text-sm font-extrabold tracking-wide text-white uppercase font-mono">
+                MetalScan Pro
+              </h1>
+              <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                GPS SENSOR
+              </span>
+            </div>
+            <p className="text-[10px] text-slate-400 font-mono flex items-center gap-1.5">
+              <span>Pelacak Logam & Benda Langka</span>
+              <span>•</span>
+              <span className="text-cyan-400 font-semibold">{currentReading.total.toFixed(0)} µT</span>
+            </p>
+          </div>
+        </div>
+
+        {/* Action icons */}
+        <div className="flex items-center gap-1">
+          {/* Calibration Drift Monitor Badge */}
+          <button
+            type="button"
+            onClick={() => setIsDriftModalOpen(true)}
+            className={`flex items-center gap-1.5 px-2 py-1.5 rounded-xl border text-xs font-mono transition-all ${
+              driftState.status === 'STABLE'
+                ? 'bg-slate-900 text-slate-300 border-slate-800 hover:border-slate-700'
+                : driftState.status === 'MODERATE_NOISE'
+                ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 shadow-sm shadow-amber-950/40'
+                : 'bg-rose-500/20 text-rose-300 border-rose-500/40 shadow-sm shadow-rose-950/40 animate-pulse'
+            }`}
+            title={`Calibration Drift Monitor: ${
+              driftState.status === 'STABLE'
+                ? `Baseline Stabil (Drift: ${driftState.drift > 0 ? '+' : ''}${driftState.drift.toFixed(1)} µT, Noise: ±${driftState.noiseSigma.toFixed(1)} µT)`
+                : driftState.status === 'MODERATE_NOISE'
+                ? `Noise Sedang (Drift: ${driftState.drift > 0 ? '+' : ''}${driftState.drift.toFixed(1)} µT)`
+                : `Lingkungan Berisik! (Noise: ±${driftState.noiseSigma.toFixed(1)} µT)`
+            } - Buka Monitor`}
+          >
+            <Activity
+              className={`w-3.5 h-3.5 ${
+                driftState.status === 'STABLE'
+                  ? 'text-cyan-400'
+                  : driftState.status === 'MODERATE_NOISE'
+                  ? 'text-amber-400'
+                  : 'text-rose-400 animate-spin'
+              }`}
+            />
+            <span className="font-bold">
+              {driftState.drift > 0 ? '+' : ''}
+              {driftState.drift.toFixed(1)}
+            </span>
+            <span className="text-[9px] text-slate-400">µT</span>
+            {driftState.status !== 'STABLE' && (
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  driftState.status === 'MODERATE_NOISE'
+                    ? 'bg-amber-400'
+                    : 'bg-rose-500 animate-ping'
+                }`}
+              />
+            )}
+          </button>
+
+          {/* Battery & Eco Power-Save Indicator */}
+          <button
+            type="button"
+            onClick={() => setIsSettingsOpen(true)}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs font-mono transition-all ${
+              batteryState.isPowerSaveActive
+                ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 shadow-sm shadow-emerald-950/40'
+                : 'bg-slate-900 text-slate-300 border-slate-800 hover:border-slate-700'
+            }`}
+            title={`Baterai: ${batteryState.level}% ${batteryState.charging ? '(Mengisi Daya)' : ''} | Mode: ${
+              batteryState.isPowerSaveActive
+                ? `Hemat Daya Aktif (${batteryState.currentMagnetometerHz} Hz, GPS Eco)`
+                : 'Normal (30 Hz, GPS Akurat)'
+            }`}
+          >
+            {batteryState.charging ? (
+              <BatteryCharging className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
+            ) : batteryState.isLow ? (
+              <BatteryWarning className="w-3.5 h-3.5 text-amber-400 animate-bounce" />
+            ) : (
+              <Battery className="w-3.5 h-3.5 text-slate-300" />
+            )}
+            <span>{batteryState.level}%</span>
+            {batteryState.isPowerSaveActive && (
+              <span className="text-[9px] px-1 py-0.2 rounded bg-emerald-400 text-black font-extrabold flex items-center gap-0.5">
+                <Leaf className="w-2.5 h-2.5" />
+                <span>ECO</span>
+              </span>
+            )}
+          </button>
+
+          {/* Proximity Pulse Flash LED quick toggle */}
+          <button
+            type="button"
+            onClick={toggleProximityPulse}
+            className={`p-2 rounded-xl border transition-all ${
+              (settings.proximityPulseEnabled ?? true)
+                ? isStrobing
+                  ? 'bg-amber-400 text-black border-white shadow-lg shadow-amber-500/80 scale-105 animate-pulse font-bold'
+                  : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                : 'bg-slate-900 text-slate-500 border-slate-800'
+            }`}
+            title={`Proximity Pulse Flash LED: ${(settings.proximityPulseEnabled ?? true) ? 'Aktif (Berkedip sebanding intensitas)' : 'Nonaktif'}`}
+          >
+            <Flashlight className="w-4 h-4" />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              audioService.unlockAudio();
+              setSettings((prev) => ({ ...prev, soundEnabled: !prev.soundEnabled }));
+            }}
+            className={`p-2 rounded-xl border transition-colors ${
+              settings.soundEnabled
+                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                : 'bg-slate-900 text-slate-500 border-slate-800'
+            }`}
+            title="Aktif/Nonaktifkan Suara"
+          >
+            {settings.soundEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setIsGuideOpen(true)}
+            className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-amber-300 border border-slate-800 transition-colors"
+            title="Buku Panduan Identifikasi Benda Langka"
+          >
+            <BookOpen className="w-4 h-4" />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setIsSettingsOpen(true)}
+            className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 transition-colors"
+            title="Pengaturan Sensor & Auto-GPS"
+          >
+            <Settings className="w-4 h-4" />
+          </button>
+        </div>
+      </header>
+
+      {/* Floating Notification Toast */}
+      {recentNotification && (
+        <div className="fixed top-16 left-4 right-4 max-w-md mx-auto z-[550] bg-slate-900/95 backdrop-blur-xl border border-amber-500/50 rounded-2xl p-3.5 shadow-2xl animate-in slide-in-from-top duration-300 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-300 shrink-0">
+              <CheckCircle2 className="w-5 h-5 text-amber-400" />
+            </div>
+            <div>
+              <h4 className="text-xs font-bold text-slate-100">{recentNotification.title}</h4>
+              <p className="text-[11px] text-slate-300 leading-tight mt-0.5 font-mono">
+                {recentNotification.message}
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setRecentNotification(null)}
+            className="text-slate-400 hover:text-white text-sm p-1"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
+      {/* Main Tab Views */}
+      <main className="flex-1 p-4 pb-24 space-y-4">
+        {activeTab === 'detector' && (
+          <div className="space-y-4 animate-in fade-in duration-200">
+            {/* Quick Status / Auto-save Status Strip with AR Toggle */}
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-900/60 border border-slate-800 px-3.5 py-2 rounded-2xl text-xs font-mono">
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`w-2 h-2 rounded-full ${
+                      settings.autoSaveEnabled ? 'bg-amber-400 animate-pulse' : 'bg-slate-600'
+                    }`}
+                  />
+                  <span className="text-slate-300">
+                    Auto-GPS:{' '}
+                    <strong className={settings.autoSaveEnabled ? 'text-amber-400' : 'text-slate-500'}>
+                      {settings.autoSaveEnabled ? `AKTIF (>${settings.autoSaveThreshold} µT)` : 'NONAKTIF'}
+                    </strong>
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  {/* AR Camera Toggle Button */}
+                  <button
+                    type="button"
+                    onClick={() => setShowARView(!showARView)}
+                    className={`flex items-center gap-1.5 px-3 py-1 rounded-xl font-bold text-xs font-mono border transition-all ${
+                      showARView
+                        ? 'bg-gradient-to-r from-cyan-500 to-indigo-600 text-white border-cyan-400 shadow-md shadow-cyan-900/50'
+                        : 'bg-slate-800/90 text-cyan-400 border-cyan-500/30 hover:bg-slate-800 hover:border-cyan-400/60'
+                    }`}
+                    title="Lihat Temuan di Dunia Nyata Melalui Kamera AR"
+                  >
+                    <Camera className="w-3.5 h-3.5" />
+                    <span>{showARView ? 'Tutup AR' : 'Kamera AR (3D)'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleManualPin}
+                    className="flex items-center gap-1.5 px-3 py-1 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white rounded-xl font-bold text-xs shadow-md shadow-cyan-900/40 active:scale-95 transition-all"
+                    title="Simpan titik GPS lokasi saat ini ke peta"
+                  >
+                    <MapPin className="w-3.5 h-3.5" />
+                    <span>Tandai GPS</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Eco Power-Save Active Banner */}
+              {batteryState.isPowerSaveActive && (
+                <div className="flex items-center justify-between bg-emerald-950/40 border border-emerald-500/30 px-3.5 py-1.5 rounded-xl text-xs font-mono text-emerald-300 shadow-sm animate-in fade-in">
+                  <div className="flex items-center gap-2">
+                    <Leaf className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                    <span>
+                      <strong className="text-emerald-200">Mode Hemat Daya:</strong> Magnetometer{' '}
+                      <span className="text-white font-bold">{batteryState.currentMagnetometerHz} Hz</span> • GPS Mode Hemat
+                      {batteryState.isScreenOff && ' (Layar Redup/Mati)'}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsSettingsOpen(true)}
+                    className="text-[11px] underline text-emerald-400 hover:text-white"
+                  >
+                    Atur
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Augmented Reality View (Shown when toggled) */}
+            {showARView && (
+              <ARMetalFinder
+                findings={findings}
+                userLocation={userLocation}
+                currentMagneticStrength={currentReading.total}
+              />
+            )}
+
+            {/* Calibration Drift Monitor & Environmental Noise Warning Banner */}
+            {(settings.driftMonitorEnabled ?? true) && !isDriftBannerDismissed && (
+              <CalibrationDriftBanner
+                driftState={driftState}
+                onOpenModal={() => setIsDriftModalOpen(true)}
+                onTareZero={handleTareZero}
+                onDismiss={() => setIsDriftBannerDismissed(true)}
+              />
+            )}
+
+            {/* Tactical Analog / Digital Arc Gauge */}
+            <GaugeMeter
+              totalStrength={currentReading.total}
+              netStrength={currentReading.netTotal}
+              baseline={baseline}
+              threshold={settings.autoSaveThreshold}
+              onTareZero={handleTareZero}
+              isProximityPulsing={isStrobing}
+              driftState={driftState}
+              onOpenDriftMonitor={() => setIsDriftModalOpen(true)}
+            />
+
+            {/* Real-time Oscilloscope Waveform Canvas */}
+            <WaveformChart
+              currentReading={currentReading}
+              baseline={baseline}
+              threshold={settings.autoSaveThreshold}
+              autoSaveEnabled={settings.autoSaveEnabled}
+            />
+
+            {/* Radar Proximity Sonar Scanner */}
+            <RadarScanner
+              netStrength={currentReading.netTotal}
+              totalStrength={currentReading.total}
+              heading={userLocation?.heading || null}
+            />
+
+            {/* Quick Testing Console for Laptop / Testing */}
+            <SimulationControls
+              isSimulating={sensorManager.isSimulating()}
+              onToggleSim={(sim) => sensorManager.setSimulationMode(sim)}
+              onTareZero={handleTareZero}
+              sensorType={sensorStatus.type}
+            />
+          </div>
+        )}
+
+        {activeTab === 'map' && (
+          <div className="space-y-4 animate-in fade-in duration-200">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-base font-bold text-slate-100 flex items-center gap-2">
+                  <MapPin className="w-5 h-5 text-cyan-400" />
+                  <span>Peta Sebaran Temuan Logam</span>
+                </h2>
+                <p className="text-xs text-slate-400">
+                  Titik koordinat yang disimpan otomatis berdasarkan anomali sensor
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleManualPin}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white rounded-xl text-xs font-mono font-semibold shadow-md transition-all active:scale-95"
+              >
+                <MapPin className="w-3.5 h-3.5" />
+                <span>Tandai Sekarang</span>
+              </button>
+            </div>
+
+            {/* Leaflet Map Canvas */}
+            <FindingsMap
+              findings={findings}
+              userLocation={userLocation}
+              onDeleteFinding={handleDeleteFinding}
+              onOpenExportModal={() => setIsExportModalOpen(true)}
+              onOpenHotspotsModal={() => setIsHotspotsModalOpen(true)}
+            />
+
+            {/* Quick summary below map with D3 toggle & Export launcher */}
+            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-3.5 text-xs text-slate-300 font-mono flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <span className="text-slate-400">Tersimpan:</span>{' '}
+                <strong className="text-slate-100">{findings.length} Titik</strong>
+                <span className="text-slate-600 mx-2">|</span>
+                <span className="text-slate-400">Auto-GPS:</span>{' '}
+                <strong className="text-amber-400">
+                  {findings.filter((f) => f.autoSaved).length} Otomatis
+                </strong>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {findings.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setIsHotspotsModalOpen(true)}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-[11px] font-mono border bg-amber-600/20 text-amber-300 border-amber-500/40 hover:bg-amber-600/30 transition-all"
+                    title="Prediksi Hotspot Penggalian Berikutnya dengan Gemini AI"
+                  >
+                    <span>Hotspot AI</span>
+                  </button>
+                )}
+
+                {findings.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setIsExportModalOpen(true)}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-[11px] font-mono border bg-teal-600/20 text-teal-300 border-teal-500/40 hover:bg-teal-600/30 transition-all"
+                    title="Ekspor Laporan PDF Lengkap Peta & CSV Spreadsheet"
+                  >
+                    <span>Ekspor PDF / CSV</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => setShowMapStats(!showMapStats)}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-[11px] font-mono border transition-all ${
+                    showMapStats
+                      ? 'bg-purple-600/30 text-purple-300 border-purple-500/50'
+                      : 'bg-slate-800/80 text-slate-400 border-slate-700 hover:text-slate-200'
+                  }`}
+                >
+                  <BarChart3 className="w-3.5 h-3.5 text-purple-400" />
+                  <span>{showMapStats ? 'Sembunyikan D3' : 'Statistik D3'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('list')}
+                  className="text-cyan-400 hover:underline flex items-center gap-1"
+                >
+                  <span>Lihat Tabel Data</span>
+                  <span>→</span>
+                </button>
+              </div>
+            </div>
+
+            {/* D3 Distribution Bar Chart underneath map if enabled */}
+            {showMapStats && (
+              <FindingsDistributionChart findings={findings} />
+            )}
+          </div>
+        )}
+
+        {activeTab === 'list' && (
+          <div className="space-y-4 animate-in fade-in duration-200">
+            {/* D3 Bar Chart Visualization for Metal Type Distribution */}
+            <FindingsDistributionChart findings={findings} />
+
+            <FindingsList
+              findings={findings}
+              userLocation={userLocation}
+              onDeleteFinding={handleDeleteFinding}
+              onClearAll={handleClearAllFindings}
+              onUpdateNote={handleUpdateNote}
+              onNavigateToMap={() => setActiveTab('map')}
+              onOpenExportModal={() => setIsExportModalOpen(true)}
+              onOpenAnalysisModal={(finding) => setAnalyzingFinding(finding)}
+              onOpenHotspotsModal={() => setIsHotspotsModalOpen(true)}
+            />
+          </div>
+        )}
+      </main>
+
+      {/* Android Bottom Navigation Bar */}
+      <nav className="fixed bottom-0 left-0 right-0 max-w-2xl mx-auto bg-slate-950/95 backdrop-blur-xl border-t border-slate-800/90 z-50 px-6 py-2.5 flex items-center justify-around shadow-2xl">
+        <button
+          type="button"
+          onClick={() => {
+            audioService.unlockAudio();
+            setActiveTab('detector');
+          }}
+          className={`flex flex-col items-center gap-1 transition-all ${
+            activeTab === 'detector'
+              ? 'text-cyan-400 scale-105'
+              : 'text-slate-400 hover:text-slate-200'
+          }`}
+        >
+          <Activity className="w-5 h-5" />
+          <span className="text-[10px] font-mono font-semibold">Detektor & Grafik</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            audioService.unlockAudio();
+            setActiveTab('map');
+          }}
+          className={`flex flex-col items-center gap-1 transition-all relative ${
+            activeTab === 'map'
+              ? 'text-cyan-400 scale-105'
+              : 'text-slate-400 hover:text-slate-200'
+          }`}
+        >
+          <MapPin className="w-5 h-5" />
+          <span className="text-[10px] font-mono font-semibold">Peta Temuan</span>
+          {findings.length > 0 && (
+            <span className="absolute -top-1 right-2 w-4 h-4 bg-amber-500 text-slate-950 text-[9px] font-bold rounded-full flex items-center justify-center font-mono">
+              {findings.length}
+            </span>
+          )}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            audioService.unlockAudio();
+            setActiveTab('list');
+          }}
+          className={`flex flex-col items-center gap-1 transition-all ${
+            activeTab === 'list'
+              ? 'text-cyan-400 scale-105'
+              : 'text-slate-400 hover:text-slate-200'
+          }`}
+        >
+          <BarChart3 className="w-5 h-5" />
+          <span className="text-[10px] font-mono font-semibold">Statistik & Log</span>
+        </button>
+      </nav>
+
+      {/* Settings Modal */}
+      <DetectorSettingsModal
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+        settings={settings}
+        onUpdateSettings={(newSettings) => setSettings((prev) => ({ ...prev, ...newSettings }))}
+        batteryState={batteryState}
+      />
+
+      {/* Rare Item Guide Modal */}
+      <RareItemGuideModal
+        isOpen={isGuideOpen}
+        onClose={() => setIsGuideOpen(false)}
+      />
+
+      {/* Export Findings & Maps Modal */}
+      <ExportFindingsModal
+        isOpen={isExportModalOpen}
+        onClose={() => setIsExportModalOpen(false)}
+        findings={findings}
+        userLocation={userLocation}
+      />
+
+      {/* Gemini AI Artifact & Historical Analysis Modal */}
+      <GeminiAnalysisModal
+        isOpen={!!analyzingFinding}
+        onClose={() => setAnalyzingFinding(null)}
+        finding={analyzingFinding}
+        userLocation={userLocation}
+        onApplyAnalysis={handleApplyGeminiAnalysis}
+      />
+
+      {/* Gemini AI Next Excavation Hotspots Suggestion Modal */}
+      <GeminiHotspotsModal
+        isOpen={isHotspotsModalOpen}
+        onClose={() => setIsHotspotsModalOpen(false)}
+        findings={findings}
+        userLocation={userLocation}
+        onPinHotspotToFindings={handlePinHotspotToFindings}
+        onNavigateToMap={() => setActiveTab('map')}
+      />
+
+      {/* Calibration Drift Monitor Modal */}
+      <CalibrationDriftModal
+        isOpen={isDriftModalOpen}
+        onClose={() => setIsDriftModalOpen(false)}
+        driftState={driftState}
+        onTareZero={handleTareZero}
+        settings={settings}
+        onUpdateSettings={(newSettings) => setSettings((prev) => ({ ...prev, ...newSettings }))}
+      />
+    </div>
+  );
+}

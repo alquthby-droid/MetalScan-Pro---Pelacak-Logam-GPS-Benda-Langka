@@ -1,0 +1,11 @@
+{
+  "name": "MetalScan Pro - Pelacak Logam & GPS Benda Langka",
+  "description": "Aplikasi pelacak logam dan benda langka presisi tinggi menggunakan sensor magnetometer dan GPS real-time dengan grafik medan magnet dan perekam peta otomatis.",
+  "requestFramePermissions": [
+    "geolocation",
+    "magnetometer",
+    "accelerometer",
+    "gyroscope"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
