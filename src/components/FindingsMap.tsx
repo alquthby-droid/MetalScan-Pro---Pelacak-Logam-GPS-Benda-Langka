@@ -2,7 +2,37 @@ import React, { useEffect, useRef, useState, useMemo } from 'react';
 import L from 'leaflet';
 import 'leaflet.heat';
 import { MetalFinding, GPSLocation, MetalCategory } from '../types/detector';
-import { Layers, Crosshair, Navigation, Trash2, MapPin, Sparkles, ExternalLink, Calendar, Compass, Flame, Eye, EyeOff, Filter, Download, Target } from 'lucide-react';
+import {
+  Layers,
+  Crosshair,
+  Navigation,
+  Trash2,
+  MapPin,
+  Sparkles,
+  ExternalLink,
+  Calendar,
+  Compass,
+  Flame,
+  Eye,
+  EyeOff,
+  Filter,
+  Download,
+  Target,
+  Radio,
+  Route,
+  Footprints,
+  Clock,
+  Shovel,
+  CheckCircle2,
+} from 'lucide-react';
+import { SoilDepthIndicator } from './SoilDepthIndicator';
+import { targetCenterAlarmService, TargetCenterAlarmState } from '../services/targetCenterAlarm';
+import {
+  RouteAlgorithm,
+  planExcavationRoute,
+  calculateDistanceMeters,
+} from '../services/routePlannerService';
+import { RoutePlannerModal } from './RoutePlannerModal';
 
 interface FindingsMapProps {
   findings: MetalFinding[];
@@ -11,10 +41,14 @@ interface FindingsMapProps {
   onSelectFinding?: (finding: MetalFinding) => void;
   onOpenExportModal?: () => void;
   onOpenHotspotsModal?: () => void;
+  onOpenRoutePlanner?: () => void;
+  onTogglePriority?: (id: string) => void;
+  onToggleFavorite?: (id: string) => void;
 }
 
-const CATEGORY_FILTER_OPTIONS: { id: MetalCategory | 'all'; label: string; symbol: string; color: string; activeBg: string; activeBorder: string }[] = [
+const CATEGORY_FILTER_OPTIONS: { id: MetalCategory | 'all' | 'favorite'; label: string; symbol: string; color: string; activeBg: string; activeBorder: string }[] = [
   { id: 'all', label: 'Semua', symbol: '✦', color: '#94a3b8', activeBg: 'bg-cyan-500/20', activeBorder: 'border-cyan-400' },
+  { id: 'favorite', label: 'Favorit', symbol: '❤️', color: '#f43f5e', activeBg: 'bg-rose-500/20', activeBorder: 'border-rose-400' },
   { id: 'gold', label: 'Emas', symbol: '★', color: '#eab308', activeBg: 'bg-yellow-500/20', activeBorder: 'border-yellow-400' },
   { id: 'meteorite', label: 'Meteorit', symbol: '☄', color: '#c084fc', activeBg: 'bg-purple-500/20', activeBorder: 'border-purple-400' },
   { id: 'bronze', label: 'Perunggu', symbol: '⬢', color: '#f97316', activeBg: 'bg-orange-500/20', activeBorder: 'border-orange-400' },
@@ -29,6 +63,9 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
   onSelectFinding,
   onOpenExportModal,
   onOpenHotspotsModal,
+  onOpenRoutePlanner,
+  onTogglePriority,
+  onToggleFavorite,
 }) => {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
@@ -36,28 +73,66 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
   const userAccuracyCircleRef = useRef<L.Circle | null>(null);
   const markersLayerRef = useRef<L.LayerGroup | null>(null);
   const heatLayerRef = useRef<L.Layer | null>(null);
+  const routeLayerRef = useRef<L.LayerGroup | null>(null);
   const baseLayersRef = useRef<{ [key: string]: L.TileLayer }>({});
 
   const [activeLayer, setActiveLayer] = useState<'dark' | 'satellite'>('dark');
   const [showHeatmap, setShowHeatmap] = useState<boolean>(true);
   const [showPins, setShowPins] = useState<boolean>(true);
   const [heatRadius, setHeatRadius] = useState<number>(35);
-  const [selectedCategory, setSelectedCategory] = useState<MetalCategory | 'all'>('all');
+  const [selectedCategory, setSelectedCategory] = useState<MetalCategory | 'all' | 'favorite'>('all');
   const [showFilterBar, setShowFilterBar] = useState<boolean>(true);
   const [selectedFinding, setSelectedFinding] = useState<MetalFinding | null>(null);
 
+  // Route Planner States
+  const [isRoutePlannerActive, setIsRoutePlannerActive] = useState<boolean>(false);
+  const [isRoutePlannerModalOpen, setIsRoutePlannerModalOpen] = useState<boolean>(false);
+  const [selectedRouteFindingIds, setSelectedRouteFindingIds] = useState<string[]>(() =>
+    findings.map((f) => f.id)
+  );
+  const [routeAlgorithm, setRouteAlgorithm] = useState<RouteAlgorithm>('two_opt');
+  const [startFromGPS, setStartFromGPS] = useState<boolean>(true);
+  const [isRoundTripRoute, setIsRoundTripRoute] = useState<boolean>(false);
+
+  // Synchronize route finding IDs when findings change
+  useEffect(() => {
+    setSelectedRouteFindingIds((prev) => {
+      const validIdSet = new Set(findings.map((f) => f.id));
+      const kept = prev.filter((id) => validIdSet.has(id));
+      // If none selected or all were previously selected, select all
+      if (kept.length === 0 || kept.length >= findings.length - 1) {
+        return findings.map((f) => f.id);
+      }
+      return kept;
+    });
+  }, [findings]);
+
+  // Target Center Sensor Alarm state
+  const [alarmState, setAlarmState] = useState<TargetCenterAlarmState>(() =>
+    targetCenterAlarmService.getState()
+  );
+
+  useEffect(() => {
+    const unsub = targetCenterAlarmService.subscribe((st) => setAlarmState(st));
+    return () => unsub();
+  }, []);
+
   // Category counts
   const categoryCounts = useMemo(() => {
-    const counts: Record<string, number> = { all: findings.length };
+    const counts: Record<string, number> = {
+      all: findings.length,
+      favorite: findings.filter((f) => f.isFavorite).length,
+    };
     findings.forEach((f) => {
       counts[f.category] = (counts[f.category] || 0) + 1;
     });
     return counts;
   }, [findings]);
 
-  // Filtered findings based on selected category
+  // Filtered findings based on selected category or favorite
   const filteredFindings = useMemo(() => {
     if (selectedCategory === 'all') return findings;
+    if (selectedCategory === 'favorite') return findings.filter((f) => f.isFavorite === true);
     return findings.filter((f) => f.category === selectedCategory);
   }, [findings, selectedCategory]);
 
@@ -179,7 +254,95 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
     }
   }, [userLocation]);
 
-  // Render Findings Markers & Heatmap based on filteredFindings
+  // Filter findings for Route Planner
+  const selectedRouteFindings = useMemo(() => {
+    const idSet = new Set(selectedRouteFindingIds);
+    return findings.filter((f) => idSet.has(f.id));
+  }, [findings, selectedRouteFindingIds]);
+
+  // Calculated excavation route using chosen algorithm (TSP 2-Opt / Nearest Neighbor / Value Priority)
+  const calculatedRoute = useMemo(() => {
+    if (!isRoutePlannerActive || selectedRouteFindings.length === 0) return null;
+    return planExcavationRoute({
+      selectedFindings: selectedRouteFindings,
+      userLocation,
+      startFromUserGPS: startFromGPS && !!userLocation,
+      algorithm: routeAlgorithm,
+      isRoundTrip: isRoundTripRoute,
+    });
+  }, [
+    isRoutePlannerActive,
+    selectedRouteFindings,
+    userLocation,
+    startFromGPS,
+    routeAlgorithm,
+    isRoundTripRoute,
+  ]);
+
+  // Update Route Polyline & Sequence Trail on Map
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    if (routeLayerRef.current) {
+      map.removeLayer(routeLayerRef.current);
+      routeLayerRef.current = null;
+    }
+
+    if (isRoutePlannerActive && calculatedRoute && calculatedRoute.pathCoordinates.length > 1) {
+      const routeGroup = L.layerGroup();
+
+      // Outer glow polyline
+      const glowLine = L.polyline(calculatedRoute.pathCoordinates, {
+        color: '#06b6d4',
+        weight: 7,
+        opacity: 0.35,
+        lineCap: 'round',
+        lineJoin: 'round',
+      });
+      glowLine.addTo(routeGroup);
+
+      // Inner glowing dashed polyline
+      const dashLine = L.polyline(calculatedRoute.pathCoordinates, {
+        color: '#38bdf8',
+        weight: 3.5,
+        dashArray: '8, 8',
+        opacity: 0.95,
+        lineCap: 'round',
+        lineJoin: 'round',
+      });
+      dashLine.addTo(routeGroup);
+
+      // Start Marker if User GPS
+      if (calculatedRoute.startLocation.isUserGPS) {
+        const startIcon = L.divIcon({
+          className: 'route-start-marker',
+          html: `
+            <div style="padding: 2px 7px; background: #0284c7; color: #fff; font-size: 10px; font-weight: bold; font-family: monospace; border-radius: 9999px; border: 1.5px solid #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.6); white-space: nowrap;">
+              ▶ AWAL (GPS)
+            </div>
+          `,
+          iconAnchor: [32, 22],
+        });
+        L.marker([calculatedRoute.startLocation.lat, calculatedRoute.startLocation.lng], {
+          icon: startIcon,
+          zIndexOffset: 1500,
+        }).addTo(routeGroup);
+      }
+
+      routeGroup.addTo(map);
+      routeLayerRef.current = routeGroup;
+    }
+  }, [isRoutePlannerActive, calculatedRoute]);
+
+  // Fit bounds to the planned route
+  const fitRouteBounds = () => {
+    if (!mapInstanceRef.current || !calculatedRoute || calculatedRoute.pathCoordinates.length === 0) return;
+    const poly = L.polyline(calculatedRoute.pathCoordinates);
+    mapInstanceRef.current.fitBounds(poly.getBounds().pad(0.25), { animate: true });
+  };
+
+  // Render Findings Markers & Heatmap based on filteredFindings & route planner mode
   useEffect(() => {
     const map = mapInstanceRef.current;
     const markersLayer = markersLayerRef.current;
@@ -242,31 +405,107 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
           symbol = '⬢';
         }
 
-        const customIcon = L.divIcon({
-          className: 'finding-pin-marker',
-          html: `
-            <div style="position: relative; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: transform 0.2s;" onmouseover="this.style.transform='scale(1.2)'" onmouseout="this.style.transform='scale(1)'">
-              <div style="width: 28px; height: 28px; border-radius: 9999px; background: ${pinColor}; border: 2px solid #ffffff; display: flex; align-items: center; justify-content: center; color: #000; font-weight: bold; font-size: 13px; box-shadow: 0 4px 12px rgba(0,0,0,0.5);">
-                ${symbol}
+        let customIcon: L.DivIcon;
+
+        // Custom display when Route Planner mode is active
+        if (isRoutePlannerActive) {
+          const isSelectedInRoute = selectedRouteFindingIds.includes(finding.id);
+          const waypoint = calculatedRoute?.waypoints.find((w) => w.id === finding.id);
+          const stepNumber = waypoint ? waypoint.stepNumber : null;
+
+          if (isSelectedInRoute) {
+            customIcon = L.divIcon({
+              className: 'route-step-marker',
+              html: `
+                <div style="position: relative; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: transform 0.2s;" onmouseover="this.style.transform='scale(1.2)'" onmouseout="this.style.transform='scale(1)'">
+                  <div style="width: 30px; height: 30px; border-radius: 9999px; background: ${pinColor}; border: 2.5px solid #ffffff; display: flex; align-items: center; justify-content: center; color: #020617; font-weight: 900; font-size: 13px; font-family: monospace; box-shadow: 0 0 14px ${pinColor}, 0 4px 10px rgba(0,0,0,0.8);">
+                    ${stepNumber ? stepNumber : '✓'}
+                  </div>
+                  <div style="position: absolute; bottom: -4px; width: 6px; height: 6px; background: ${pinColor}; transform: rotate(45deg);"></div>
+                </div>
+              `,
+              iconSize: [34, 34],
+              iconAnchor: [17, 30],
+            });
+          } else {
+            // Unselected finding in route mode: dashed with + sign
+            customIcon = L.divIcon({
+              className: 'route-unselected-marker',
+              html: `
+                <div style="position: relative; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; cursor: pointer; opacity: 0.7; transition: transform 0.2s, opacity 0.2s;" onmouseover="this.style.transform='scale(1.15)'; this.style.opacity='1'" onmouseout="this.style.transform='scale(1)'; this.style.opacity='0.7'">
+                  <div style="width: 24px; height: 24px; border-radius: 9999px; background: #0f172a; border: 1.5px dashed ${pinColor}; display: flex; align-items: center; justify-content: center; color: ${pinColor}; font-weight: bold; font-size: 12px; font-family: monospace;">
+                    +
+                  </div>
+                </div>
+              `,
+              iconSize: [28, 28],
+              iconAnchor: [14, 14],
+            });
+          }
+        } else {
+          // Standard pin marker
+          customIcon = L.divIcon({
+            className: 'finding-pin-marker',
+            html: `
+              <div style="position: relative; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: transform 0.2s;" onmouseover="this.style.transform='scale(1.2)'" onmouseout="this.style.transform='scale(1)'">
+                <div style="width: 28px; height: 28px; border-radius: 9999px; background: ${pinColor}; border: 2px solid #ffffff; display: flex; align-items: center; justify-content: center; color: #000; font-weight: bold; font-size: 13px; box-shadow: 0 4px 12px rgba(0,0,0,0.5);">
+                  ${symbol}
+                </div>
+                ${finding.isPriority ? '<div style="position: absolute; top: -5px; right: -5px; background: #f59e0b; color: #000; font-size: 10px; width: 16px; height: 16px; border-radius: 9999px; display: flex; align-items: center; justify-content: center; font-weight: 900; border: 1.5px solid #fff; box-shadow: 0 0 8px #f59e0b;">★</div>' : ''}
+                ${finding.isFavorite ? '<div style="position: absolute; top: -5px; left: -5px; background: #e11d48; color: #fff; font-size: 10px; width: 17px; height: 17px; border-radius: 9999px; display: flex; align-items: center; justify-content: center; font-weight: 900; border: 1.5px solid #fff; box-shadow: 0 0 8px #e11d48;">❤️</div>' : ''}
+                <div style="position: absolute; bottom: -4px; width: 6px; height: 6px; background: ${pinColor}; transform: rotate(45deg);"></div>
               </div>
-              <div style="position: absolute; bottom: -4px; width: 6px; height: 6px; background: ${pinColor}; transform: rotate(45deg);"></div>
-            </div>
-          `,
-          iconSize: [32, 32],
-          iconAnchor: [16, 28],
-        });
+            `,
+            iconSize: [32, 32],
+            iconAnchor: [16, 28],
+          });
+        }
+
+        // Draw 5-meter Geofence radius circle if finding is priority
+        if (finding.isPriority) {
+          const geofenceCircle = L.circle([finding.lat, finding.lng], {
+            radius: 5,
+            color: '#f59e0b',
+            weight: 2,
+            dashArray: '5, 5',
+            fillColor: '#fbbf24',
+            fillOpacity: 0.22,
+          });
+          geofenceCircle.bindTooltip(`🎯 Geofence 5m: ${finding.name}`, {
+            direction: 'top',
+          });
+          geofenceCircle.addTo(markersLayer);
+        }
 
         const marker = L.marker([finding.lat, finding.lng], { icon: customIcon });
 
         marker.on('click', () => {
-          setSelectedFinding(finding);
-          if (onSelectFinding) onSelectFinding(finding);
+          if (isRoutePlannerActive) {
+            // In Route Planner mode: clicking toggles inclusion in route
+            setSelectedRouteFindingIds((prev) =>
+              prev.includes(finding.id)
+                ? prev.filter((id) => id !== finding.id)
+                : [...prev, finding.id]
+            );
+          } else {
+            setSelectedFinding(finding);
+            if (onSelectFinding) onSelectFinding(finding);
+          }
         });
 
         marker.addTo(markersLayer);
       });
     }
-  }, [filteredFindings, onSelectFinding, showHeatmap, showPins, heatRadius]);
+  }, [
+    filteredFindings,
+    onSelectFinding,
+    showHeatmap,
+    showPins,
+    heatRadius,
+    isRoutePlannerActive,
+    selectedRouteFindingIds,
+    calculatedRoute,
+  ]);
 
   const centerOnUser = () => {
     if (!mapInstanceRef.current || !userLocation) return;
@@ -350,6 +589,34 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
           >
             {showPins ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
           </button>
+
+          {/* Route Planner Toggle Button */}
+          {findings.length > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                const nextState = !isRoutePlannerActive;
+                setIsRoutePlannerActive(nextState);
+                if (nextState && selectedRouteFindingIds.length === 0) {
+                  setSelectedRouteFindingIds(findings.map((f) => f.id));
+                }
+              }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full backdrop-blur-md border text-xs font-mono shadow-lg active:scale-95 transition-all ${
+                isRoutePlannerActive
+                  ? 'bg-gradient-to-r from-emerald-600/90 to-cyan-600/90 border-emerald-400 text-white shadow-emerald-950/60 font-bold'
+                  : 'bg-slate-900/90 border-slate-700/80 text-slate-300 hover:text-white'
+              }`}
+              title="Perencana Rute Penggalian Optimal (TSP / Terdekat)"
+            >
+              <Route className={`w-3.5 h-3.5 ${isRoutePlannerActive ? 'text-emerald-300 animate-pulse' : 'text-cyan-400'}`} />
+              <span>Route Planner</span>
+              {isRoutePlannerActive && (
+                <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-emerald-950/90 text-emerald-300 font-bold border border-emerald-500/40">
+                  {selectedRouteFindingIds.length}
+                </span>
+              )}
+            </button>
+          )}
 
           {/* Layer switcher */}
           <button
@@ -548,13 +815,17 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
                     {selectedFinding.autoSaved ? 'Auto-Simpan GPS' : 'Tandai Manual'}
                   </span>
                 </div>
-                <div className="flex items-center gap-3 text-xs text-slate-400 font-mono mt-0.5">
-                  <span className="flex items-center gap-1">
+                <div className="flex items-center gap-3 text-xs text-slate-400 font-mono mt-0.5 flex-wrap">
+                  <span className="flex items-center gap-1 text-amber-400 font-semibold">
                     <Sparkles className="w-3 h-3 text-amber-400" />
-                    <strong>{selectedFinding.magneticStrength.toFixed(1)} µT</strong>
+                    <span>{selectedFinding.magneticStrength.toFixed(1)} µT</span>
                   </span>
                   <span>•</span>
-                  <span>Kedalaman: ~{selectedFinding.depthEstimateCm} cm</span>
+                  <SoilDepthIndicator
+                    depthCm={selectedFinding.depthEstimateCm}
+                    itemName={selectedFinding.name}
+                    category={selectedFinding.category}
+                  />
                 </div>
               </div>
             </div>
@@ -565,6 +836,89 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
               className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 text-lg leading-none"
             >
               ×
+            </button>
+          </div>
+
+          {/* Priority Geofence 5m Quick Status */}
+          <div className="mt-2 p-2 rounded-xl bg-slate-950/70 border border-slate-800 flex items-center justify-between gap-2">
+            <span className="text-[10px] font-mono text-slate-400 uppercase flex items-center gap-1">
+              <span className="text-amber-400">★</span>
+              Geofence Radius 5m:
+            </span>
+            {onTogglePriority && (
+              <button
+                type="button"
+                onClick={() => {
+                  onTogglePriority(selectedFinding.id);
+                  setSelectedFinding((prev) => (prev ? { ...prev, isPriority: !prev.isPriority } : null));
+                }}
+                className={`px-2.5 py-1 rounded-lg text-[10px] font-mono font-bold border transition-all ${
+                  selectedFinding.isPriority
+                    ? 'bg-amber-500/25 text-amber-300 border-amber-400 ring-1 ring-amber-400/40'
+                    : 'bg-slate-800 hover:bg-slate-700 text-slate-400 border-slate-700'
+                }`}
+              >
+                {selectedFinding.isPriority ? '★ Prioritas 5m AKTIF' : '☆ Jadikan Prioritas 5m'}
+              </button>
+            )}
+          </div>
+
+          {/* Favorite Status Toggle in Map Popup */}
+          <div className="mt-2 p-2 rounded-xl bg-slate-950/70 border border-slate-800 flex items-center justify-between gap-2">
+            <span className="text-[10px] font-mono text-slate-400 uppercase flex items-center gap-1">
+              <span className="text-rose-400">❤️</span>
+              Filter Favorit:
+            </span>
+            {onToggleFavorite && (
+              <button
+                type="button"
+                onClick={() => {
+                  onToggleFavorite(selectedFinding.id);
+                  setSelectedFinding((prev) => (prev ? { ...prev, isFavorite: !prev.isFavorite } : null));
+                }}
+                className={`px-2.5 py-1 rounded-lg text-[10px] font-mono font-bold border transition-all flex items-center gap-1 ${
+                  selectedFinding.isFavorite
+                    ? 'bg-rose-500/25 text-rose-300 border-rose-400 ring-1 ring-rose-400/40'
+                    : 'bg-slate-800 hover:bg-slate-700 text-slate-400 border-slate-700'
+                }`}
+              >
+                <span>{selectedFinding.isFavorite ? '❤️' : '🤍'}</span>
+                <span>{selectedFinding.isFavorite ? 'Favorit AKTIF' : 'Tandai Favorit'}</span>
+              </button>
+            )}
+          </div>
+
+          {/* Sensor Alarm Quick Status in Map Popup */}
+          <div className="mt-2.5 p-2 rounded-xl bg-slate-950/70 border border-slate-800 flex items-center justify-between gap-2">
+            <span className="text-[10px] font-mono text-slate-400 uppercase flex items-center gap-1">
+              <Radio className="w-3 h-3 text-cyan-400" />
+              Sensor Alarm Titik Pusat:
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                targetCenterAlarmService.toggleAlarm(
+                  {
+                    id: selectedFinding.id,
+                    name: selectedFinding.name,
+                    category: selectedFinding.category,
+                    lat: selectedFinding.lat,
+                    lng: selectedFinding.lng,
+                    depthEstimateCm: selectedFinding.depthEstimateCm,
+                  },
+                  userLocation?.lat,
+                  userLocation?.lng
+                );
+              }}
+              className={`px-2.5 py-1 rounded-lg text-[10px] font-mono font-bold border transition-all ${
+                alarmState.isActive && alarmState.targetId === selectedFinding.id
+                  ? 'bg-rose-500/25 text-rose-300 border-rose-500/80 animate-pulse'
+                  : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
+              }`}
+            >
+              {alarmState.isActive && alarmState.targetId === selectedFinding.id
+                ? `ONLINE (${alarmState.distanceMeters.toFixed(1)}m)`
+                : 'OFFLINE (Aktifkan)'}
             </button>
           </div>
 
@@ -611,6 +965,111 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
           </div>
         </div>
       )}
+
+      {/* Floating Route Planner HUD Bar when Route Planner mode is active */}
+      {isRoutePlannerActive && (
+        <div className="absolute bottom-11 left-3 right-3 z-[430] bg-slate-900/95 backdrop-blur-xl border border-emerald-500/50 rounded-2xl p-2.5 sm:px-3.5 shadow-2xl animate-in slide-in-from-bottom duration-200">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-2.5 flex-wrap">
+              <div className="w-7 h-7 rounded-xl bg-emerald-500/20 border border-emerald-400 text-emerald-300 flex items-center justify-center font-bold">
+                <Route className="w-3.5 h-3.5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold text-slate-100 font-mono">
+                    {calculatedRoute
+                      ? `${calculatedRoute.waypoints.length} Titik Sasaran • ${(calculatedRoute.totalDistanceMeters >= 1000 ? `${(calculatedRoute.totalDistanceMeters / 1000).toFixed(2)} km` : `${calculatedRoute.totalDistanceMeters.toFixed(0)} m`)}`
+                      : 'Pilih Titik di Peta'}
+                  </span>
+                  <span className="text-[9px] font-mono px-1.5 py-0.2 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-semibold">
+                    {routeAlgorithm === 'two_opt' ? '2-Opt TSP' : routeAlgorithm === 'value_priority' ? 'Prioritas Nilai' : 'Rute Terdekat'}
+                  </span>
+                </div>
+                {calculatedRoute && (
+                  <div className="flex items-center gap-2 text-[10px] font-mono text-slate-400 mt-0.5">
+                    <span>Jalan: ~{calculatedRoute.totalWalkingMinutes} mnt</span>
+                    <span>•</span>
+                    <span>Gali: ~{calculatedRoute.totalDiggingMinutes} mnt</span>
+                    <span>•</span>
+                    <span className="text-purple-300">Total: ~{calculatedRoute.totalExpeditionMinutes} mnt</span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1.5 ml-auto">
+              {calculatedRoute && calculatedRoute.pathCoordinates.length > 1 && (
+                <button
+                  type="button"
+                  onClick={fitRouteBounds}
+                  className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-cyan-500/30 rounded-xl text-xs font-mono transition-all"
+                  title="Pusatkan peta ke seluruh rute"
+                >
+                  Fokus Rute
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => setIsRoutePlannerModalOpen(true)}
+                className="flex items-center gap-1 px-3 py-1 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white rounded-xl text-xs font-mono font-bold shadow-md transition-all active:scale-95"
+              >
+                <span>Detail & Jadwal</span>
+                <ExternalLink className="w-3 h-3" />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setIsRoutePlannerActive(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+                title="Tutup Mode Route Planner"
+              >
+                ×
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Route Planner Full Modal */}
+      <RoutePlannerModal
+        isOpen={isRoutePlannerModalOpen}
+        onClose={() => setIsRoutePlannerModalOpen(false)}
+        findings={findings}
+        userLocation={userLocation}
+        selectedFindingIds={selectedRouteFindingIds}
+        onToggleFindingSelection={(id) =>
+          setSelectedRouteFindingIds((prev) =>
+            prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]
+          )
+        }
+        onSelectAllFindings={() => setSelectedRouteFindingIds(findings.map((f) => f.id))}
+        onClearSelectedFindings={() => setSelectedRouteFindingIds([])}
+        onSelectValuableFindings={() =>
+          setSelectedRouteFindingIds(
+            findings
+              .filter(
+                (f) =>
+                  f.category === 'gold' ||
+                  f.category === 'meteorite' ||
+                  f.category === 'silver'
+              )
+              .map((f) => f.id)
+          )
+        }
+        activeAlgorithm={routeAlgorithm}
+        onChangeAlgorithm={(algo) => setRouteAlgorithm(algo)}
+        startFromUserGPS={startFromGPS}
+        onToggleStartFromUserGPS={(val) => setStartFromGPS(val)}
+        isRoundTrip={isRoundTripRoute}
+        onToggleIsRoundTrip={(val) => setIsRoundTripRoute(val)}
+        onFocusWaypointOnMap={(finding) => {
+          if (mapInstanceRef.current) {
+            mapInstanceRef.current.setView([finding.lat, finding.lng], 18, { animate: true });
+          }
+          setSelectedFinding(finding);
+        }}
+      />
 
       {/* GPS Status Pill at bottom */}
       <div className="absolute bottom-3 left-3 z-[400] pointer-events-none">

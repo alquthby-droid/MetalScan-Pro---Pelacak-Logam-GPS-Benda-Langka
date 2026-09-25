@@ -151,6 +151,41 @@ class DetectorAudioService {
     }
   }
 
+  public playGeofenceChime(volume: number = 0.7) {
+    this.initContext();
+    if (!this.ctx) return;
+    try {
+      const now = this.ctx.currentTime;
+      const notes = [
+        { freq: 784, start: 0, duration: 0.12 },     // G5
+        { freq: 1046.5, start: 0.10, duration: 0.14 }, // C6
+        { freq: 1568, start: 0.22, duration: 0.40 },  // G6 (longer chime ring)
+      ];
+
+      notes.forEach(({ freq, start, duration }) => {
+        if (!this.ctx) return;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(freq, now + start);
+
+        const peakGain = Math.min(0.8, volume * 0.6);
+        gain.gain.setValueAtTime(0.001, now + start);
+        gain.gain.linearRampToValueAtTime(peakGain, now + start + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + start + duration);
+
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+
+        osc.start(now + start);
+        osc.stop(now + start + duration);
+      });
+    } catch {
+      // ignore
+    }
+  }
+
   public stopContinuousTone() {
     if (this.oscillator) {
       try {

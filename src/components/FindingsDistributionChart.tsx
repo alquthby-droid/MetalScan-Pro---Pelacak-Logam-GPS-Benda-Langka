@@ -5,6 +5,8 @@ import { BarChart3, TrendingUp, Sparkles, Layers, Zap } from 'lucide-react';
 
 interface FindingsDistributionChartProps {
   findings: MetalFinding[];
+  selectedCategory?: string;
+  onSelectCategory?: (category: string) => void;
 }
 
 interface CategoryStats {
@@ -75,7 +77,11 @@ const CATEGORY_META: Record<
   },
 };
 
-export const FindingsDistributionChart: React.FC<FindingsDistributionChartProps> = ({ findings }) => {
+export const FindingsDistributionChart: React.FC<FindingsDistributionChartProps> = ({
+  findings,
+  selectedCategory,
+  onSelectCategory,
+}) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const tooltipRef = useRef<HTMLDivElement | null>(null);
@@ -113,6 +119,19 @@ export const FindingsDistributionChart: React.FC<FindingsDistributionChartProps>
   // D3 Rendering with smooth animations
   useEffect(() => {
     if (!svgRef.current || !containerRef.current) return;
+
+    const isCategorySelected = (cat: MetalCategory) => {
+      if (!selectedCategory || selectedCategory === 'all') return false;
+      if (selectedCategory === 'gold' || selectedCategory === 'emas') return cat === 'gold';
+      if (selectedCategory === 'bronze' || selectedCategory === 'perunggu') return cat === 'bronze';
+      if (selectedCategory === 'meteorite' || selectedCategory === 'meteorit') return cat === 'meteorite';
+      if (selectedCategory === 'other' || selectedCategory === 'lainnya') {
+        return cat !== 'gold' && cat !== 'bronze' && cat !== 'meteorite';
+      }
+      return selectedCategory === cat;
+    };
+
+    const hasActiveFilter = Boolean(selectedCategory && selectedCategory !== 'all');
 
     const containerWidth = containerRef.current.clientWidth || 360;
     const width = Math.max(300, containerWidth);
@@ -261,7 +280,8 @@ export const FindingsDistributionChart: React.FC<FindingsDistributionChartProps>
       .attr('rx', 6)
       .attr('fill', (d) => `url(#bar-grad-${d.category})`)
       .attr('stroke', (d) => d.color)
-      .attr('stroke-width', 1)
+      .attr('stroke-width', (d) => (isCategorySelected(d.category) ? 2.5 : 1))
+      .attr('opacity', (d) => (hasActiveFilter ? (isCategorySelected(d.category) ? 1.0 : 0.3) : 1.0))
       .attr('filter', 'url(#bar-shadow)')
       .transition()
       .duration(700)
@@ -280,6 +300,7 @@ export const FindingsDistributionChart: React.FC<FindingsDistributionChartProps>
       .attr('font-weight', 'bold')
       .attr('font-family', 'monospace')
       .attr('fill', (d) => d.color)
+      .attr('opacity', (d) => (hasActiveFilter ? (isCategorySelected(d.category) ? 1.0 : 0.4) : 1.0))
       .transition()
       .duration(700)
       .ease(d3.easeCubicOut)
@@ -308,10 +329,10 @@ export const FindingsDistributionChart: React.FC<FindingsDistributionChartProps>
       .attr('text-anchor', 'middle')
       .attr('font-size', '10px')
       .attr('fill', '#ffffff')
-      .attr('opacity', 0.85)
+      .attr('opacity', (d) => (hasActiveFilter ? (isCategorySelected(d.category) ? 0.95 : 0.35) : 0.85))
       .text((d) => d.symbol);
 
-    // Interactive Hover Handlers
+    // Interactive Hover & Click Handlers
     bars
       .on('mouseenter', function (event, d) {
         d3.select(this)
@@ -331,8 +352,14 @@ export const FindingsDistributionChart: React.FC<FindingsDistributionChartProps>
           .attr('transform', 'scale(1)');
 
         setHoveredCategory(null);
+      })
+      .on('click', function (event, d) {
+        if (onSelectCategory) {
+          const isCurrent = isCategorySelected(d.category);
+          onSelectCategory(isCurrent ? 'all' : d.category);
+        }
       });
-  }, [findings, metric, statsData]);
+  }, [findings, metric, statsData, selectedCategory, onSelectCategory]);
 
   return (
     <div
@@ -351,9 +378,20 @@ export const FindingsDistributionChart: React.FC<FindingsDistributionChartProps>
               <span className="text-[9px] px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-300 border border-purple-500/40">
                 d3.js v7
               </span>
+              {selectedCategory && selectedCategory !== 'all' && (
+                <button
+                  type="button"
+                  onClick={() => onSelectCategory?.('all')}
+                  className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 hover:bg-cyan-500/30 flex items-center gap-1 transition-all"
+                  title="Klik untuk melihat semua kategori"
+                >
+                  <span>Filter: {selectedCategory}</span>
+                  <span>✕</span>
+                </button>
+              )}
             </h3>
             <p className="text-[10px] text-slate-400 font-mono">
-              Gambaran rasio temuan & densitas medan area penjelajahan
+              Klik pada batang diagram atau gunakan dropdown untuk memfilter temuan
             </p>
           </div>
         </div>

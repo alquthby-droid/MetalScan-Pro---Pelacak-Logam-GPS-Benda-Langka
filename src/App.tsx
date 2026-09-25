@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import confetti from 'canvas-confetti';
 import {
   Compass,
@@ -53,10 +53,32 @@ import { RareItemGuideModal } from './components/RareItemGuideModal';
 import { ExportFindingsModal } from './components/ExportFindingsModal';
 import { GeminiAnalysisModal } from './components/GeminiAnalysisModal';
 import { GeminiHotspotsModal } from './components/GeminiHotspotsModal';
-import { GeminiFindingAnalysis, GeminiExcavationHotspot, MetalCategory, DriftMonitorState } from './types/detector';
+import {
+  GeminiFindingAnalysis,
+  GeminiExcavationHotspot,
+  MetalCategory,
+  DriftMonitorState,
+  GeofenceState,
+  WeatherCondition,
+  NightModeState,
+  ThemeMode,
+} from './types/detector';
 import { driftMonitorService } from './services/driftMonitor';
 import { CalibrationDriftModal } from './components/CalibrationDriftModal';
 import { CalibrationDriftBanner } from './components/CalibrationDriftBanner';
+import { targetCenterAlarmService, TargetCenterAlarmState } from './services/targetCenterAlarm';
+import { TargetCenterAlarmBanner } from './components/TargetCenterAlarmBanner';
+import { HeaderCompassBearing } from './components/HeaderCompassBearing';
+import { PWAInstallButton } from './components/PWAInstallButton';
+import { geofenceService } from './services/geofenceService';
+import { GeofenceAlertBanner } from './components/GeofenceAlertBanner';
+import { FreeDeploymentGuideModal } from './components/FreeDeploymentGuideModal';
+import { weatherService } from './services/weatherService';
+import { WeatherBadgeHeader } from './components/WeatherBadgeHeader';
+import { WeatherSafetyModal } from './components/WeatherSafetyModal';
+import { ExcavationSafetyBanner } from './components/ExcavationSafetyBanner';
+import { NightModeToggle } from './components/NightModeToggle';
+import { Cloud, Eye } from 'lucide-react';
 
 const DEFAULT_SETTINGS: DetectorSettings = {
   autoSaveEnabled: true,
@@ -77,6 +99,13 @@ const DEFAULT_SETTINGS: DetectorSettings = {
   driftMonitorEnabled: true,
   driftAlertThreshold: 5.0,
   driftSoundAlertEnabled: false,
+  geofenceEnabled: true,
+  geofenceRadiusMeters: 5,
+  geofenceSoundAlertEnabled: true,
+  geofenceVibrationAlertEnabled: true,
+  themeMode: 'auto',
+  tacticalNightVision: true,
+  weatherAlertsEnabled: true,
 };
 
 const SEED_FINDINGS: MetalFinding[] = [
@@ -93,6 +122,8 @@ const SEED_FINDINGS: MetalFinding[] = [
     depthEstimateCm: 11,
     note: 'Anomali terdeteksi di kedalaman dangkal tanah pasir.',
     autoSaved: true,
+    isPriority: true,
+    isFavorite: true,
   },
   {
     id: 'seed-2',
@@ -107,6 +138,7 @@ const SEED_FINDINGS: MetalFinding[] = [
     depthEstimateCm: 7,
     note: 'Batu berpori berat dengan tarikan magnetik kuat.',
     autoSaved: true,
+    isPriority: true,
   },
   {
     id: 'seed-3',
@@ -120,6 +152,21 @@ const SEED_FINDINGS: MetalFinding[] = [
     name: 'Perunggu / Kuningan Kuno',
     depthEstimateCm: 18,
     note: 'Diduga pecahan uang koin kuno / artefak perunggu.',
+    autoSaved: false,
+    isFavorite: true,
+  },
+  {
+    id: 'seed-4',
+    timestamp: Date.now() - 1000 * 60 * 240,
+    lat: -6.2088 - 0.0008,
+    lng: 106.8456 - 0.0011,
+    accuracy: 4.5,
+    magneticStrength: 62.1,
+    netStrength: 14.1,
+    category: 'iron',
+    name: 'Besi Tua / Relik Perkakasan',
+    depthEstimateCm: 25,
+    note: 'Paku tempa kuno atau serpihan perkakas besi.',
     autoSaved: false,
   },
 ];
@@ -186,12 +233,134 @@ export default function App() {
   const [driftState, setDriftState] = useState<DriftMonitorState>(() => driftMonitorService.getState());
   const [isDriftModalOpen, setIsDriftModalOpen] = useState<boolean>(false);
   const [isDriftBannerDismissed, setIsDriftBannerDismissed] = useState<boolean>(false);
+  const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<string>('all');
+  const [targetAlarmState, setTargetAlarmState] = useState<TargetCenterAlarmState>(() =>
+    targetCenterAlarmService.getState()
+  );
+
+  useEffect(() => {
+    const unsub = targetCenterAlarmService.subscribe((st) => setTargetAlarmState(st));
+    return () => unsub();
+  }, []);
+
+  const [geofenceState, setGeofenceState] = useState<GeofenceState>(() => geofenceService.getState());
+  const [isDeployGuideOpen, setIsDeployGuideOpen] = useState<boolean>(false);
+
+  useEffect(() => {
+    const unsub = geofenceService.subscribe((st) => setGeofenceState(st));
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    geofenceService.syncTargets(findings, settings.geofenceRadiusMeters || 5);
+  }, [findings, settings.geofenceRadiusMeters]);
+
+  useEffect(() => {
+    if (userLocation) {
+      geofenceService.evaluatePosition(userLocation, settings);
+    }
+  }, [userLocation, settings]);
+
+  const handleTogglePriority = (id: string) => {
+    setFindings((prev) =>
+      prev.map((f) => (f.id === id ? { ...f, isPriority: !f.isPriority } : f))
+    );
+  };
+
+  const handleToggleFavorite = (id: string) => {
+    setFindings((prev) =>
+      prev.map((f) => (f.id === id ? { ...f, isFavorite: !f.isFavorite } : f))
+    );
+  };
+
   const [recentNotification, setRecentNotification] = useState<{
     title: string;
     message: string;
     category: string;
     time: number;
   } | null>(null);
+
+  // Weather and Field Excavation Safety State
+  const [weather, setWeather] = useState<WeatherCondition | null>(() => weatherService.getCondition());
+  const [isWeatherModalOpen, setIsWeatherModalOpen] = useState<boolean>(false);
+  const [isWeatherLoading, setIsWeatherLoading] = useState<boolean>(false);
+
+  useEffect(() => {
+    const unsub = weatherService.subscribe((cond) => setWeather(cond));
+    return () => unsub();
+  }, []);
+
+  // Fetch real-time weather on GPS update and periodically every 10 mins
+  useEffect(() => {
+    const lat = userLocation?.lat ?? -6.2088;
+    const lng = userLocation?.lng ?? 106.8456;
+    weatherService.fetchWeather(lat, lng);
+
+    const interval = setInterval(() => {
+      weatherService.fetchWeather(lat, lng);
+    }, 1000 * 60 * 10);
+
+    return () => clearInterval(interval);
+  }, [userLocation?.lat, userLocation?.lng]);
+
+  const handleRefreshWeather = async () => {
+    setIsWeatherLoading(true);
+    const lat = userLocation?.lat ?? -6.2088;
+    const lng = userLocation?.lng ?? 106.8456;
+    await weatherService.fetchWeather(lat, lng, true);
+    setIsWeatherLoading(false);
+  };
+
+  // Local Time Detection & Automatic Dark Mode / Tactical Night Vision
+  const [currentTime, setCurrentTime] = useState<Date>(new Date());
+
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(new Date()), 30000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const nightState: NightModeState = useMemo(() => {
+    const hour = currentTime.getHours();
+    const localTimeString = currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const isClockNight = hour >= 18 || hour < 6;
+    const isSunNight = weather ? !weather.isDay : isClockNight;
+    const effectiveIsNight = isSunNight;
+
+    const mode = settings.themeMode || 'auto';
+    let isNightActive = false;
+    let isTactical = false;
+    let reason = '';
+
+    if (mode === 'auto') {
+      isNightActive = effectiveIsNight;
+      isTactical = effectiveIsNight && (settings.tacticalNightVision ?? true);
+      reason = effectiveIsNight
+        ? `Malam hari (${weather?.sunset ? `Sunset ${weather.sunset}` : '18:00 - 06:00'})`
+        : `Siang hari (${weather?.sunrise ? `Sunrise ${weather.sunrise}` : '06:00 - 18:00'})`;
+    } else if (mode === 'night_vision') {
+      isNightActive = true;
+      isTactical = true;
+      reason = 'Mode Malam Taktis OLED Aktif Manual';
+    } else if (mode === 'dark') {
+      isNightActive = true;
+      isTactical = false;
+      reason = 'Mode Gelap Standar Aktif';
+    } else {
+      isNightActive = false;
+      isTactical = false;
+      reason = 'Mode Siang Terang Aktif';
+    }
+
+    return {
+      themeMode: mode,
+      isNightTime: isNightActive,
+      isTacticalRedActive: isTactical,
+      localTimeString,
+      sunsetTime: weather?.sunset,
+      sunriseTime: weather?.sunrise,
+      reason,
+    };
+  }, [currentTime, weather, settings.themeMode, settings.tacticalNightVision]);
 
   // Auto-save cooldown and spike tracking refs
   const lastAutoSaveTimeRef = useRef<number>(0);
@@ -329,6 +498,7 @@ export default function App() {
         };
         setUserLocation(loc);
         latestLocationRef.current = loc;
+        targetCenterAlarmService.updateUserLocation(loc.lat, loc.lng);
       },
       (err) => {
         console.warn('Geolocation watch error:', err.message);
@@ -506,6 +676,20 @@ export default function App() {
     setTimeout(() => setRecentNotification(null), 4000);
   };
 
+  const handleAddFinding = (newFinding: MetalFinding) => {
+    setFindings((prev) => [newFinding, ...prev]);
+    audioService.playAlertBeep(true);
+    setRecentNotification({
+      title: 'Target NTB Disimpan!',
+      message: `${newFinding.name} ditambahkan ke koleksi temuan Anda.`,
+      category: newFinding.category,
+      time: Date.now(),
+    });
+    setTimeout(() => {
+      setRecentNotification(null);
+    }, 4000);
+  };
+
   const handleDeleteFinding = (id: string) => {
     setFindings((prev) => prev.filter((f) => f.id !== id));
   };
@@ -586,9 +770,26 @@ export default function App() {
 
   return (
     <div
-      className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans max-w-2xl mx-auto border-x border-slate-900 shadow-2xl relative"
+      className={`min-h-screen flex flex-col font-sans max-w-2xl mx-auto border-x shadow-2xl relative transition-colors duration-300 ${
+        nightState.isTacticalRedActive
+          ? 'bg-black border-red-950/70 text-rose-100 selection:bg-rose-900'
+          : nightState.isNightTime
+          ? 'bg-slate-950 border-slate-900 text-slate-100'
+          : 'bg-slate-900 border-slate-800 text-slate-100'
+      }`}
       onClick={() => audioService.unlockAudio()}
     >
+      {/* Tactical Night Vision Top Strip */}
+      {nightState.isTacticalRedActive && (
+        <div className="bg-red-950/50 border-b border-red-900/50 px-3.5 py-1 text-[10px] font-mono text-rose-300 flex items-center justify-between">
+          <span className="flex items-center gap-1.5">
+            <Eye className="w-3 h-3 text-rose-400 animate-pulse" />
+            <span>Mode Malam Taktis Aktif (OLED Reduksi Silau Lapangan)</span>
+          </span>
+          <span className="text-rose-400/80 font-bold">{nightState.localTimeString}</span>
+        </div>
+      )}
+
       {/* Proximity Pulse Night Vision Screen Strobe / Visual Alarm Backdrop Overlay */}
       {isStrobing && (
         <div
@@ -602,30 +803,58 @@ export default function App() {
       )}
 
       {/* Android Native-Style Header Bar */}
-      <header className="sticky top-0 z-50 bg-slate-950/90 backdrop-blur-xl border-b border-slate-800/80 px-4 py-3 flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
-          <div className="w-9 h-9 rounded-2xl bg-gradient-to-tr from-cyan-600 to-emerald-500 flex items-center justify-center shadow-lg shadow-cyan-900/30 text-white font-black text-sm">
-            <Sparkles className="w-5 h-5 animate-pulse" />
+      <header className="sticky top-0 z-50 bg-slate-950/90 backdrop-blur-xl border-b border-slate-800/80 px-3 py-2 flex items-center justify-between gap-1.5 overflow-x-auto scrollbar-none">
+        <div className="flex items-center gap-2 min-w-0 shrink-0">
+          <div className="w-8 h-8 rounded-2xl bg-gradient-to-tr from-cyan-600 to-emerald-500 flex items-center justify-center shadow-lg shadow-cyan-900/30 text-white font-black text-xs shrink-0">
+            <Sparkles className="w-4 h-4 animate-pulse" />
           </div>
-          <div>
-            <div className="flex items-center gap-1.5">
-              <h1 className="text-sm font-extrabold tracking-wide text-white uppercase font-mono">
+          <div className="min-w-0">
+            <div className="flex items-center gap-1">
+              <h1 className="text-xs sm:text-sm font-extrabold tracking-wide text-white uppercase font-mono truncate">
                 MetalScan Pro
               </h1>
-              <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
-                GPS SENSOR
+              <span className="text-[8px] font-mono px-1 py-0.2 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shrink-0">
+                GPS
               </span>
             </div>
-            <p className="text-[10px] text-slate-400 font-mono flex items-center gap-1.5">
-              <span>Pelacak Logam & Benda Langka</span>
-              <span>•</span>
+            <p className="text-[9px] text-slate-400 font-mono flex items-center gap-1 truncate">
               <span className="text-cyan-400 font-semibold">{currentReading.total.toFixed(0)} µT</span>
             </p>
           </div>
         </div>
 
-        {/* Action icons */}
-        <div className="flex items-center gap-1">
+        {/* Action icons with Real-time Compass, Weather, Night Mode, etc. */}
+        <div className="flex items-center gap-1.5 shrink-0">
+          {/* Weather & Excavation Safety Live Badge */}
+          <WeatherBadgeHeader
+            weather={weather}
+            onOpenWeatherModal={() => setIsWeatherModalOpen(true)}
+          />
+
+          {/* Local Time Detection & Auto Dark / Night Vision Toggle */}
+          <NightModeToggle
+            nightState={nightState}
+            onSelectThemeMode={(mode) => setSettings((prev) => ({ ...prev, themeMode: mode }))}
+          />
+
+          {/* Real-time Bearing Compass with ON/OFF switch */}
+          <HeaderCompassBearing
+            userLocation={userLocation}
+            activeAlarmTarget={
+              targetAlarmState.isActive && targetAlarmState.targetId
+                ? {
+                    lat: targetAlarmState.targetLat,
+                    lng: targetAlarmState.targetLng,
+                    name: targetAlarmState.targetName,
+                  }
+                : null
+            }
+            nearestFinding={findings.length > 0 ? findings[0] : null}
+          />
+
+          {/* Android PWA Install App Button */}
+          <PWAInstallButton variant="header" />
+
           {/* Calibration Drift Monitor Badge */}
           <button
             type="button"
@@ -742,6 +971,16 @@ export default function App() {
             <BookOpen className="w-4 h-4" />
           </button>
 
+          {/* Panduan Deploy Cloud Gratis Modal Trigger */}
+          <button
+            type="button"
+            onClick={() => setIsDeployGuideOpen(true)}
+            className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-cyan-400 border border-slate-800 transition-colors"
+            title="Panduan Deploy Cloud Gratis (Render, Cloudflare, Railway, Koyeb, dll.)"
+          >
+            <Cloud className="w-4 h-4" />
+          </button>
+
           <button
             type="button"
             onClick={() => setIsSettingsOpen(true)}
@@ -752,6 +991,43 @@ export default function App() {
           </button>
         </div>
       </header>
+
+      {/* Excavation Weather Safety Warning Banner (Lightning / Heavy Rain / Dangerous Mud alert) */}
+      <ExcavationSafetyBanner
+        weather={weather}
+        onOpenWeatherModal={() => setIsWeatherModalOpen(true)}
+      />
+
+      {/* Geofence 5m Priority Finding Proximity Alert Banner */}
+      {geofenceState.currentTargetInside && (
+        <GeofenceAlertBanner
+          geofenceState={geofenceState}
+          onDismiss={() => geofenceService.dismissCurrentAlert()}
+          onNavigateToMap={() => {
+            setActiveTab('map');
+            geofenceService.dismissCurrentAlert();
+          }}
+          onActivateTargetAlarm={(target) => {
+            targetCenterAlarmService.activateAlarm(
+              {
+                id: target.id,
+                name: target.name,
+                category: target.category,
+                lat: target.lat,
+                lng: target.lng,
+                depthEstimateCm: target.depthEstimateCm ?? 15,
+              },
+              userLocation?.lat,
+              userLocation?.lng
+            );
+          }}
+          onOpenCompass={() => {
+            setActiveTab('list');
+            geofenceService.dismissCurrentAlert();
+          }}
+          onToggleMute={() => geofenceService.toggleMute()}
+        />
+      )}
 
       {/* Floating Notification Toast */}
       {recentNotification && (
@@ -927,6 +1203,14 @@ export default function App() {
               </button>
             </div>
 
+            {/* Target Center Sensor Alarm HUD Banner if active */}
+            {targetAlarmState.isActive && targetAlarmState.targetId && (
+              <TargetCenterAlarmBanner
+                alarmState={targetAlarmState}
+                onDeactivate={() => targetCenterAlarmService.deactivateAlarm()}
+              />
+            )}
+
             {/* Leaflet Map Canvas */}
             <FindingsMap
               findings={findings}
@@ -934,6 +1218,8 @@ export default function App() {
               onDeleteFinding={handleDeleteFinding}
               onOpenExportModal={() => setIsExportModalOpen(true)}
               onOpenHotspotsModal={() => setIsHotspotsModalOpen(true)}
+              onTogglePriority={handleTogglePriority}
+              onToggleFavorite={handleToggleFavorite}
             />
 
             {/* Quick summary below map with D3 toggle & Export launcher */}
@@ -997,7 +1283,11 @@ export default function App() {
 
             {/* D3 Distribution Bar Chart underneath map if enabled */}
             {showMapStats && (
-              <FindingsDistributionChart findings={findings} />
+              <FindingsDistributionChart
+                findings={findings}
+                selectedCategory={selectedCategoryFilter}
+                onSelectCategory={setSelectedCategoryFilter}
+              />
             )}
           </div>
         )}
@@ -1005,7 +1295,11 @@ export default function App() {
         {activeTab === 'list' && (
           <div className="space-y-4 animate-in fade-in duration-200">
             {/* D3 Bar Chart Visualization for Metal Type Distribution */}
-            <FindingsDistributionChart findings={findings} />
+            <FindingsDistributionChart
+              findings={findings}
+              selectedCategory={selectedCategoryFilter}
+              onSelectCategory={setSelectedCategoryFilter}
+            />
 
             <FindingsList
               findings={findings}
@@ -1017,6 +1311,11 @@ export default function App() {
               onOpenExportModal={() => setIsExportModalOpen(true)}
               onOpenAnalysisModal={(finding) => setAnalyzingFinding(finding)}
               onOpenHotspotsModal={() => setIsHotspotsModalOpen(true)}
+              selectedCategory={selectedCategoryFilter}
+              onCategoryChange={setSelectedCategoryFilter}
+              onAddFinding={handleAddFinding}
+              onTogglePriority={handleTogglePriority}
+              onToggleFavorite={handleToggleFavorite}
             />
           </div>
         )}
@@ -1085,6 +1384,23 @@ export default function App() {
         settings={settings}
         onUpdateSettings={(newSettings) => setSettings((prev) => ({ ...prev, ...newSettings }))}
         batteryState={batteryState}
+        onOpenDeployGuide={() => setIsDeployGuideOpen(true)}
+        onOpenWeatherModal={() => setIsWeatherModalOpen(true)}
+      />
+
+      {/* Real-time Weather & Excavation Safety Assessment Modal */}
+      <WeatherSafetyModal
+        isOpen={isWeatherModalOpen}
+        onClose={() => setIsWeatherModalOpen(false)}
+        weather={weather}
+        onRefresh={handleRefreshWeather}
+        isLoading={isWeatherLoading}
+      />
+
+      {/* Free Deployment Guide Modal (Non-Vercel / Non-Netlify) */}
+      <FreeDeploymentGuideModal
+        isOpen={isDeployGuideOpen}
+        onClose={() => setIsDeployGuideOpen(false)}
       />
 
       {/* Rare Item Guide Modal */}

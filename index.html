@@ -9,8 +9,24 @@
     <meta property="og:description" content="Aplikasi pelacak logam dan benda langka presisi tinggi menggunakan sensor magnetometer dan GPS real-time dengan grafik medan magnet dan perekam peta otomatis." />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="theme-color" content="#090d16" />
+    <meta name="theme-color" content="#020617" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="MetalScan" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="alternate icon" href="/favicon.ico" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+    <script>
+      // Gracefully prevent unhandled WebSocket proxy rejections in iframe dev environment
+      window.addEventListener('unhandledrejection', function (e) {
+        var str = (e && e.reason && (e.reason.message || String(e.reason))) || '';
+        if (str.indexOf('WebSocket') !== -1 || str.indexOf('[vite]') !== -1) {
+          e.preventDefault();
+        }
+      });
+    </script>
   </head>
   <body class="bg-slate-950 text-slate-100 select-none overflow-x-hidden antialiased">
     <div id="root"></div>

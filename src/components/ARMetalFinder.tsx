@@ -120,9 +120,10 @@ export const ARMetalFinder: React.FC<ARMetalFinderProps> = ({
       }
       setIsCameraActive(true);
     } catch (err: unknown) {
-      console.warn('Camera AR error:', err);
       const msg =
-        err instanceof Error
+        err instanceof Error && (err.name === 'NotAllowedError' || err.message.includes('Permission'))
+          ? 'Izin kamera belum aktif. Berikan izin kamera di browser untuk menampilkan target di layar AR.'
+          : err instanceof Error
           ? err.message
           : 'Izin kamera ditolak atau kamera tidak tersedia.';
       setCameraError(msg);

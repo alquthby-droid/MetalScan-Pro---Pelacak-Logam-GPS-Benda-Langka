@@ -54,6 +54,8 @@ export interface MetalFinding {
   depthEstimateCm: number;
   note?: string;
   autoSaved: boolean;
+  isPriority?: boolean; // Geofence 5m monitoring target flag
+  isFavorite?: boolean; // Favoritkan temuan untuk filter khusus di peta & statistik
   aiAnalysis?: GeminiFindingAnalysis;
 }
 
@@ -76,6 +78,86 @@ export interface DetectorSettings {
   driftMonitorEnabled: boolean; // Calibration Drift Monitor active
   driftAlertThreshold: number; // in µT (e.g. 5.0 µT)
   driftSoundAlertEnabled: boolean; // Audio chime when environment becomes noisy
+  geofenceEnabled: boolean; // Auto monitoring perimeter around priority findings
+  geofenceRadiusMeters: number; // default 5 meters
+  geofenceSoundAlertEnabled: boolean; // Audio chime upon entering 5m radius
+  geofenceVibrationAlertEnabled: boolean; // Haptic vibration on geofence trigger
+  themeMode?: ThemeMode; // 'auto' | 'night_vision' | 'dark' | 'day'
+  tacticalNightVision?: boolean; // Deep OLED black + red/amber night vision accents
+  weatherAlertsEnabled?: boolean; // Peringatan cuaca dan petir aktif
+}
+
+export type ExcavationSafetyLevel = 'safe' | 'caution' | 'danger';
+
+export interface WeatherCondition {
+  temperatureC: number;
+  apparentTempC: number;
+  humidityPercent: number;
+  weatherCode: number;
+  weatherDescription: string;
+  weatherIcon: string;
+  windSpeedKmH: number;
+  windGustsKmH: number;
+  precipitationMm: number;
+  rainMm: number;
+  precipitationProbability: number;
+  isDay: boolean;
+  sunrise?: string;
+  sunset?: string;
+  timezone: string;
+  cityName?: string;
+  lastUpdated: number;
+  safetyAssessment: {
+    level: ExcavationSafetyLevel;
+    score: number; // 0 - 100
+    title: string;
+    advice: string;
+    isLightningRisk: boolean;
+    isHeavyRain: boolean;
+    isMuddyGround: boolean;
+  };
+}
+
+export type ThemeMode = 'auto' | 'night_vision' | 'dark' | 'day';
+
+export interface NightModeState {
+  themeMode: ThemeMode;
+  isNightTime: boolean;
+  isTacticalRedActive: boolean;
+  localTimeString: string;
+  sunsetTime?: string;
+  sunriseTime?: string;
+  reason: string;
+}
+
+export interface GeofenceTarget {
+  id: string;
+  name: string;
+  lat: number;
+  lng: number;
+  category: MetalCategory;
+  magneticStrength?: number;
+  depthEstimateCm?: number;
+  isPriority: boolean;
+  radiusMeters: number;
+}
+
+export interface GeofenceEvent {
+  target: GeofenceTarget;
+  distanceMeters: number;
+  bearingDegrees: number;
+  timestamp: number;
+  type: 'ENTER' | 'INSIDE' | 'EXIT';
+}
+
+export interface GeofenceState {
+  isActive: boolean;
+  activeTargetsCount: number;
+  currentTargetInside: GeofenceTarget | null;
+  currentDistanceMeters: number | null;
+  currentBearingDegrees: number | null;
+  lastTriggerTimestamp: number | null;
+  isAudioMuted: boolean;
 }
 
 export type DriftStatus = 'STABLE' | 'MODERATE_NOISE' | 'HIGH_NOISE' | 'SEVERE_DRIFT';

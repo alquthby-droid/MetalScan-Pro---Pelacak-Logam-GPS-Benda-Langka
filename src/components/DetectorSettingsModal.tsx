@@ -1,7 +1,35 @@
 import React from 'react';
-import { Settings, Volume2, VolumeX, Vibrate, Save, Shield, HelpCircle, X, Flashlight, Zap, Battery, BatteryCharging, BatteryWarning, Leaf, EyeOff, Radio, Activity } from 'lucide-react';
-import { DetectorSettings, BatteryState } from '../types/detector';
+import {
+  Settings,
+  Volume2,
+  VolumeX,
+  Vibrate,
+  Save,
+  Shield,
+  HelpCircle,
+  X,
+  Flashlight,
+  Zap,
+  Battery,
+  BatteryCharging,
+  BatteryWarning,
+  Leaf,
+  EyeOff,
+  Radio,
+  Activity,
+  Smartphone,
+  Globe,
+  Cloud,
+  Play,
+  Moon,
+  Sun,
+  Eye,
+  CloudRain,
+} from 'lucide-react';
+import { DetectorSettings, BatteryState, ThemeMode } from '../types/detector';
 import { batteryManager } from '../services/batteryManager';
+import { PWAInstallButton } from './PWAInstallButton';
+import { geofenceService } from '../services/geofenceService';
 
 interface DetectorSettingsModalProps {
   isOpen: boolean;
@@ -9,6 +37,8 @@ interface DetectorSettingsModalProps {
   settings: DetectorSettings;
   onUpdateSettings: (newSettings: Partial<DetectorSettings>) => void;
   batteryState?: BatteryState;
+  onOpenDeployGuide?: () => void;
+  onOpenWeatherModal?: () => void;
 }
 
 export const DetectorSettingsModal: React.FC<DetectorSettingsModalProps> = ({
@@ -17,6 +47,8 @@ export const DetectorSettingsModal: React.FC<DetectorSettingsModalProps> = ({
   settings,
   onUpdateSettings,
   batteryState,
+  onOpenDeployGuide,
+  onOpenWeatherModal,
 }) => {
   if (!isOpen) return null;
 
@@ -484,6 +516,261 @@ export const DetectorSettingsModal: React.FC<DetectorSettingsModalProps> = ({
                 </div>
               </div>
             )}
+          </div>
+
+          {/* 8. Radar Geofence Temuan Prioritas (Notifikasi Suara Otomatis 5 Meter) */}
+          <div className="bg-slate-950/80 p-4 rounded-2xl border border-amber-500/40 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Radio className="w-4 h-4 text-amber-400 animate-spin-slow" />
+                <div>
+                  <div className="font-bold text-slate-100 flex items-center gap-1.5">
+                    <span>Radar Geofence (Radius 5m)</span>
+                    <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                      AUDIO OTOMATIS
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-slate-400">
+                    Notifikasi suara & getar otomatis saat masuk perimeter temuan prioritas
+                  </div>
+                </div>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={settings.geofenceEnabled ?? true}
+                  onChange={(e) => onUpdateSettings({ geofenceEnabled: e.target.checked })}
+                  className="sr-only peer"
+                />
+                <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-amber-500"></div>
+              </label>
+            </div>
+
+            {(settings.geofenceEnabled ?? true) && (
+              <div className="pt-2 border-t border-slate-800 space-y-3">
+                <div className="space-y-1.5">
+                  <div className="flex justify-between text-xs font-mono">
+                    <span className="text-slate-300">Radius Peringatan Geofence:</span>
+                    <span className="font-bold text-amber-400">
+                      {settings.geofenceRadiusMeters || 5} Meter
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-4 gap-1.5 font-mono text-xs">
+                    {[3, 5, 10, 15].map((rad) => {
+                      const isActive = (settings.geofenceRadiusMeters || 5) === rad;
+                      return (
+                        <button
+                          key={rad}
+                          type="button"
+                          onClick={() => onUpdateSettings({ geofenceRadiusMeters: rad })}
+                          className={`py-1.5 rounded-xl border text-center font-bold transition-all ${
+                            isActive
+                              ? 'bg-amber-500/20 text-amber-300 border-amber-500/60 shadow-sm'
+                              : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200'
+                          }`}
+                        >
+                          {rad}m {rad === 5 ? '★' : ''}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <p className="text-[10px] text-slate-400 font-mono">
+                    ★ 5 meter merupakan standar akurasi GPS lapangan optimal untuk eksplorasi logam.
+                  </p>
+                </div>
+
+                <div className="flex items-center justify-between pt-1">
+                  <span className="text-slate-300 text-xs">Suara Chime Geofence (Web Audio):</span>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={settings.geofenceSoundAlertEnabled ?? true}
+                      onChange={(e) => onUpdateSettings({ geofenceSoundAlertEnabled: e.target.checked })}
+                      className="sr-only peer"
+                    />
+                    <div className="w-9 h-5 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-amber-500"></div>
+                  </label>
+                </div>
+
+                <div className="flex items-center justify-between pt-1">
+                  <span className="text-slate-300 text-xs">Getaran Haptic HP (Pola Deteksi):</span>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={settings.geofenceVibrationAlertEnabled ?? true}
+                      onChange={(e) => onUpdateSettings({ geofenceVibrationAlertEnabled: e.target.checked })}
+                      className="sr-only peer"
+                    />
+                    <div className="w-9 h-5 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-amber-500"></div>
+                  </label>
+                </div>
+
+                {/* Test Audio & Simulator Buttons */}
+                <div className="grid grid-cols-2 gap-2 pt-1 font-mono text-[11px]">
+                  <button
+                    type="button"
+                    onClick={() => geofenceService.playTestChime(settings.soundVolume || 0.7)}
+                    className="flex items-center justify-center gap-1.5 py-1.5 px-2 bg-slate-900 hover:bg-slate-800 text-amber-300 border border-amber-500/40 rounded-xl transition-all active:scale-95"
+                  >
+                    <Volume2 className="w-3.5 h-3.5" />
+                    <span>Tes Nada Chime</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      geofenceService.simulateGeofenceEnter(undefined, settings);
+                      onClose();
+                    }}
+                    className="flex items-center justify-center gap-1.5 py-1.5 px-2 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-400/50 rounded-xl transition-all active:scale-95 font-bold"
+                  >
+                    <Play className="w-3.5 h-3.5" />
+                    <span>Uji Masuk 5m</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* 9. Panduan Deploy Gratis (Selain Vercel & Netlify) */}
+          <div className="bg-slate-950/80 p-4 rounded-2xl border border-cyan-500/30 space-y-2.5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Cloud className="w-4 h-4 text-cyan-400" />
+                <div>
+                  <div className="font-bold text-slate-100">Panduan Deploy Gratis</div>
+                  <div className="text-[11px] text-slate-400">
+                    Opsi cloud alternatif selain Vercel & Netlify (Render, Cloudflare, Railway)
+                  </div>
+                </div>
+              </div>
+            </div>
+            <p className="text-[11px] text-slate-400 font-mono">
+              Pelajari cara mempublikasikan aplikasi MetalScan Pro secara gratis 100% dengan HTTPS aman untuk mengaktifkan sensor magnetometer HP di mana saja.
+            </p>
+            {onOpenDeployGuide && (
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onOpenDeployGuide();
+                }}
+                className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 border border-cyan-500/40 font-mono text-xs font-bold transition-all"
+              >
+                <Globe className="w-3.5 h-3.5" />
+                <span>Buka Panduan Deploy Gratis</span>
+              </button>
+            )}
+          </div>
+
+          {/* 10. Deteksi Waktu Lokal & Mode Gelap Otomatis (Survei Malam Taktis) */}
+          <div className="bg-slate-950/80 p-4 rounded-2xl border border-purple-500/40 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Moon className="w-4 h-4 text-purple-400" />
+                <div>
+                  <div className="font-bold text-slate-100 flex items-center gap-1.5">
+                    <span>Mode Gelap & Deteksi Waktu Lokal</span>
+                    <span className="text-[9px] px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                      ERGONOMI
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-slate-400">
+                    Otomatis aktif saat matahari terbenam untuk mengurangi silau & kelelahan mata
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-slate-800 space-y-2">
+              <div className="text-xs text-slate-300 font-mono">Pilihan Mode Layar:</div>
+              <div className="grid grid-cols-2 gap-1.5 font-mono text-xs">
+                {[
+                  { id: 'auto', label: '🌙 Otomatis (Waktu)', desc: 'Aktif saat matahari terbenam' },
+                  { id: 'night_vision', label: '🔴 Malam Taktis', desc: 'OLED hitam murni & merah' },
+                  { id: 'dark', label: '🌑 Gelap Standar', desc: 'Slate 950 sepanjang hari' },
+                  { id: 'day', label: '☀️ Siang Terang', desc: 'Kontras tinggi sinar matahari' },
+                ].map((item) => {
+                  const isActive = (settings.themeMode || 'auto') === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => onUpdateSettings({ themeMode: item.id as ThemeMode })}
+                      className={`p-2 rounded-xl border text-left transition-all ${
+                        isActive
+                          ? 'bg-purple-600/25 text-purple-200 border-purple-500/70 font-bold shadow-sm'
+                          : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200'
+                      }`}
+                    >
+                      <div className="text-xs">{item.label}</div>
+                      <div className="text-[9px] text-slate-500 truncate mt-0.5">{item.desc}</div>
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-[10px] text-slate-400 font-mono">
+                ★ <strong>Manfaat Lapangan:</strong> Mode gelap malam hari menjaga sensitivitas sel batang mata (*rhodopsin*) agar mata tidak buta sesaat saat beralih antara melihat layar HP dan mengamati medan tanah yang gelap.
+              </p>
+            </div>
+          </div>
+
+          {/* 11. Pemantau Cuaca & Peringatan Petir Real-time */}
+          <div className="bg-slate-950/80 p-4 rounded-2xl border border-cyan-500/30 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <CloudRain className="w-4 h-4 text-cyan-400" />
+                <div>
+                  <div className="font-bold text-slate-100 flex items-center gap-1.5">
+                    <span>Pemantau Cuaca & Keselamatan Gali</span>
+                    <span className="text-[9px] px-1.5 py-0.2 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
+                      LIVE RADAR
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-slate-400">
+                    Peringatan dini petir, hujan lebat, dan kondisi tanah becek
+                  </div>
+                </div>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={settings.weatherAlertsEnabled ?? true}
+                  onChange={(e) => onUpdateSettings({ weatherAlertsEnabled: e.target.checked })}
+                  className="sr-only peer"
+                />
+                <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-cyan-500"></div>
+              </label>
+            </div>
+
+            <p className="text-[11px] text-slate-400 font-mono">
+              Secara otomatis menilai risiko sengatan petir pada batang detektor logam dan stabilitas dinding lubang galian saat tanah jenuh air.
+            </p>
+
+            {onOpenWeatherModal && (
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onOpenWeatherModal();
+                }}
+                className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 border border-cyan-500/40 font-mono text-xs font-bold transition-all"
+              >
+                <CloudRain className="w-3.5 h-3.5" />
+                <span>Buka Laporan Cuaca & Analisis Keselamatan</span>
+              </button>
+            )}
+          </div>
+
+          {/* PWA Android & Mobile App Installation Card */}
+          <div className="bg-slate-950/80 p-4 rounded-2xl border border-emerald-500/30 shadow-sm space-y-3">
+            <div className="flex items-center gap-2">
+              <Smartphone className="w-4 h-4 text-emerald-400" />
+              <span className="font-bold text-slate-100">Instal Aplikasi di Android / HP</span>
+            </div>
+            <p className="text-[11px] text-slate-400 font-mono">
+              Pasang MetalScan Pro sebagai aplikasi mandiri (PWA) di perangkat Android untuk akses layar penuh, responsivitas sensor maksimal, dan penggunaan tanpa koneksi internet.
+            </p>
+            <PWAInstallButton variant="full" />
           </div>
         </div>
 
