@@ -1012,35 +1012,88 @@ export const FindingsList: React.FC<FindingsListProps> = ({
                 </div>
 
                 {/* Visual Depth Estimation & Soil Stratum Indicator Strip */}
-                <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl bg-slate-900/60 border border-slate-800/80 text-xs font-mono">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-[10px] text-slate-400 uppercase font-semibold flex items-center gap-1">
-                      <Layers className="w-3.5 h-3.5 text-cyan-400" />
-                      Ikon Kedalaman Tanah:
-                    </span>
-                    <SoilDepthIndicator
-                      depthCm={finding.depthEstimateCm}
-                      itemName={finding.name}
-                      category={finding.category}
-                    />
+                <div className="flex flex-col gap-2 p-3 rounded-xl bg-slate-900/60 border border-slate-800/80 text-xs font-mono">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-[10px] text-slate-400 uppercase font-semibold flex items-center gap-1">
+                        <Layers className="w-3.5 h-3.5 text-cyan-400" />
+                        Lapisan Tanah:
+                      </span>
+                      <SoilDepthIndicator
+                        depthCm={finding.depthEstimateCm}
+                        itemName={finding.name}
+                        category={finding.category}
+                      />
+                    </div>
+
+                    {alarmState.isActive && alarmState.targetId === finding.id ? (
+                      <div className="flex items-center gap-1.5 text-[11px] text-rose-300 bg-rose-950/60 px-2.5 py-1 rounded-xl border border-rose-500/50 font-semibold animate-pulse">
+                        <Radio className="w-3 h-3 text-rose-400 animate-spin" />
+                        <span>Pusat: <strong>{alarmState.distanceMeters.toFixed(1)} m</strong></span>
+                        <span className="text-rose-400/80 text-[10px]">(~{alarmState.bearingDegrees}°)</span>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => handleToggleAlarm(finding)}
+                        className="text-[10px] font-mono text-cyan-400 hover:text-cyan-300 hover:underline flex items-center gap-1 transition-colors"
+                      >
+                        <Radio className="w-3 h-3 text-cyan-400" />
+                        <span>Pantau Titik Pusat (Alarm Online) →</span>
+                      </button>
+                    )}
                   </div>
 
-                  {alarmState.isActive && alarmState.targetId === finding.id ? (
-                    <div className="flex items-center gap-1.5 text-[11px] text-rose-300 bg-rose-950/60 px-2.5 py-1 rounded-xl border border-rose-500/50 font-semibold animate-pulse">
-                      <Radio className="w-3 h-3 text-rose-400 animate-spin" />
-                      <span>Pusat: <strong>{alarmState.distanceMeters.toFixed(1)} m</strong></span>
-                      <span className="text-rose-400/80 text-[10px]">(~{alarmState.bearingDegrees}°)</span>
+                  {/* Mini Depth Bar Graph for Excavation Priority */}
+                  <div className="bg-slate-950/70 p-2 rounded-lg border border-slate-800/80 flex flex-col gap-1">
+                    <div className="flex items-center justify-between text-[10px]">
+                      <span className="text-slate-400 flex items-center gap-1">
+                        <span>Grafik Kedalaman:</span>
+                        <strong className="text-cyan-300">~{finding.depthEstimateCm} cm</strong>
+                      </span>
+                      <span
+                        className={`font-bold px-1.5 py-0.5 rounded text-[9px] ${
+                          finding.depthEstimateCm <= 10
+                            ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                            : finding.depthEstimateCm <= 20
+                            ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                            : 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
+                        }`}
+                      >
+                        {finding.depthEstimateCm <= 10
+                          ? 'Prioritas Penggalian Tinggi (Dangkal)'
+                          : finding.depthEstimateCm <= 20
+                          ? 'Prioritas Sedang (Subsoil)'
+                          : 'Butuh Penggalian Dalam'}
+                      </span>
                     </div>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => handleToggleAlarm(finding)}
-                      className="text-[10px] font-mono text-cyan-400 hover:text-cyan-300 hover:underline flex items-center gap-1 transition-colors"
-                    >
-                      <Radio className="w-3 h-3 text-cyan-400" />
-                      <span>Pantau Titik Pusat (Alarm Online) →</span>
-                    </button>
-                  )}
+
+                    {/* Progress Bar with Gradient Scale */}
+                    <div className="relative w-full h-2 bg-slate-900 rounded-full border border-slate-800 overflow-hidden">
+                      <div
+                        className="h-full rounded-full transition-all duration-300 shadow-sm"
+                        style={{
+                          width: `${Math.min(100, Math.max(6, (finding.depthEstimateCm / 40) * 100))}%`,
+                          backgroundColor:
+                            finding.depthEstimateCm <= 10
+                              ? '#10b981'
+                              : finding.depthEstimateCm <= 20
+                              ? '#f59e0b'
+                              : finding.depthEstimateCm <= 30
+                              ? '#8b5cf6'
+                              : '#ec4899',
+                        }}
+                      />
+                    </div>
+
+                    <div className="flex justify-between text-[8px] text-slate-500 font-mono">
+                      <span>0cm (Permukaan)</span>
+                      <span>10cm</span>
+                      <span>20cm</span>
+                      <span>30cm</span>
+                      <span>40cm+ (Dasar)</span>
+                    </div>
+                  </div>
                 </div>
 
               {/* Coordinates line */}
@@ -1408,20 +1461,71 @@ export const FindingsList: React.FC<FindingsListProps> = ({
                     </div>
 
                     {/* Depth Stratum Indicator Strip */}
-                    <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl bg-slate-900/60 border border-slate-800/80 text-xs font-mono">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-[10px] text-slate-400 uppercase font-semibold flex items-center gap-1">
-                          <Layers className="w-3.5 h-3.5 text-cyan-400" />
-                          Estimasi Lapisan Tanah:
-                        </span>
-                        <SoilDepthIndicator
-                          depthCm={item.estimatedDepthCm}
-                          itemName={item.name}
-                          category={item.category}
-                        />
+                    <div className="flex flex-col gap-2 p-3 rounded-xl bg-slate-900/60 border border-slate-800/80 text-xs font-mono">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-[10px] text-slate-400 uppercase font-semibold flex items-center gap-1">
+                            <Layers className="w-3.5 h-3.5 text-cyan-400" />
+                            Estimasi Lapisan:
+                          </span>
+                          <SoilDepthIndicator
+                            depthCm={item.estimatedDepthCm}
+                            itemName={item.name}
+                            category={item.category}
+                          />
+                        </div>
+                        <div className="text-[10px] text-slate-500">
+                          Era: <strong className="text-slate-300">{item.estimatedAge}</strong>
+                        </div>
                       </div>
-                      <div className="text-[10px] text-slate-500">
-                        Era: <strong className="text-slate-300">{item.estimatedAge}</strong>
+
+                      {/* Mini Depth Bar Graph */}
+                      <div className="bg-slate-950/70 p-2 rounded-lg border border-slate-800/80 flex flex-col gap-1">
+                        <div className="flex items-center justify-between text-[10px]">
+                          <span className="text-slate-400">
+                            Grafik Kedalaman: <strong className="text-cyan-300">~{item.estimatedDepthCm} cm</strong>
+                          </span>
+                          <span
+                            className={`font-bold px-1.5 py-0.5 rounded text-[9px] ${
+                              item.estimatedDepthCm <= 10
+                                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                : item.estimatedDepthCm <= 20
+                                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                                : 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
+                            }`}
+                          >
+                            {item.estimatedDepthCm <= 10
+                              ? 'Prioritas Cepat (Dangkal)'
+                              : item.estimatedDepthCm <= 20
+                              ? 'Prioritas Sedang'
+                              : 'Penggalian Dalam'}
+                          </span>
+                        </div>
+
+                        <div className="relative w-full h-2 bg-slate-900 rounded-full border border-slate-800 overflow-hidden">
+                          <div
+                            className="h-full rounded-full transition-all duration-300 shadow-sm"
+                            style={{
+                              width: `${Math.min(100, Math.max(6, (item.estimatedDepthCm / 40) * 100))}%`,
+                              backgroundColor:
+                                item.estimatedDepthCm <= 10
+                                  ? '#10b981'
+                                  : item.estimatedDepthCm <= 20
+                                  ? '#f59e0b'
+                                  : item.estimatedDepthCm <= 30
+                                  ? '#8b5cf6'
+                                  : '#ec4899',
+                            }}
+                          />
+                        </div>
+
+                        <div className="flex justify-between text-[8px] text-slate-500 font-mono">
+                          <span>0cm</span>
+                          <span>10cm</span>
+                          <span>20cm</span>
+                          <span>30cm</span>
+                          <span>40cm+</span>
+                        </div>
                       </div>
                     </div>
 

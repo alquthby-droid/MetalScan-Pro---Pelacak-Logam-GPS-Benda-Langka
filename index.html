@@ -22,10 +22,17 @@
       // Gracefully prevent unhandled WebSocket proxy rejections in iframe dev environment
       window.addEventListener('unhandledrejection', function (e) {
         var str = (e && e.reason && (e.reason.message || String(e.reason))) || '';
-        if (str.indexOf('WebSocket') !== -1 || str.indexOf('[vite]') !== -1) {
+        if (str.indexOf('WebSocket') !== -1 || str.indexOf('[vite]') !== -1 || str.indexOf('ws:') !== -1) {
           e.preventDefault();
         }
       });
+      window.addEventListener('error', function (e) {
+        var str = (e && (e.message || String(e))) || '';
+        if (str.indexOf('WebSocket') !== -1 || str.indexOf('[vite]') !== -1 || str.indexOf('ws:') !== -1) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      }, true);
     </script>
   </head>
   <body class="bg-slate-950 text-slate-100 select-none overflow-x-hidden antialiased">
