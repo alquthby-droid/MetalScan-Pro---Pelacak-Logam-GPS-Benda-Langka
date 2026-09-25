@@ -24,6 +24,7 @@ import {
   Clock,
   Shovel,
   CheckCircle2,
+  Radar,
 } from 'lucide-react';
 import { SoilDepthIndicator } from './SoilDepthIndicator';
 import { targetCenterAlarmService, TargetCenterAlarmState } from '../services/targetCenterAlarm';
@@ -74,10 +75,12 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
   const markersLayerRef = useRef<L.LayerGroup | null>(null);
   const heatLayerRef = useRef<L.Layer | null>(null);
   const routeLayerRef = useRef<L.LayerGroup | null>(null);
+  const radiusRingsLayerRef = useRef<L.LayerGroup | null>(null);
   const baseLayersRef = useRef<{ [key: string]: L.TileLayer }>({});
 
   const [activeLayer, setActiveLayer] = useState<'dark' | 'satellite'>('dark');
   const [showHeatmap, setShowHeatmap] = useState<boolean>(true);
+  const [showRadiusRings, setShowRadiusRings] = useState<boolean>(true);
   const [showPins, setShowPins] = useState<boolean>(true);
   const [heatRadius, setHeatRadius] = useState<number>(35);
   const [selectedCategory, setSelectedCategory] = useState<MetalCategory | 'all' | 'favorite'>('all');
@@ -253,6 +256,101 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
       }
     }
   }, [userLocation]);
+
+  // Update Distance Radius Rings (5m, 10m, and 20m) around User Location
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    if (radiusRingsLayerRef.current) {
+      map.removeLayer(radiusRingsLayerRef.current);
+      radiusRingsLayerRef.current = null;
+    }
+
+    if (!showRadiusRings || !userLocation) return;
+
+    const ringsGroup = L.layerGroup();
+    const userLatLng = L.latLng(userLocation.lat, userLocation.lng);
+
+    // 1 degree latitude ~ 111,320 meters
+    const deltaLatPerMeter = 1 / 111320;
+
+    // 1. Ring 5m (Direct Search Coil & Immediate Sweep Zone - Emerald)
+    const circle5m = L.circle(userLatLng, {
+      radius: 5,
+      color: '#10b981',
+      weight: 1.5,
+      dashArray: '3, 4',
+      fillColor: '#10b981',
+      fillOpacity: 0.08,
+      interactive: false,
+    });
+    ringsGroup.addLayer(circle5m);
+
+    const badge5m = L.marker([userLocation.lat + 5 * deltaLatPerMeter, userLocation.lng], {
+      icon: L.divIcon({
+        className: 'radius-ring-badge',
+        html: `<div style="transform: translate(-50%, -50%); background: rgba(6, 78, 59, 0.9); color: #6ee7b7; border: 1px solid #10b981; border-radius: 9999px; padding: 1px 5px; font-size: 8.5px; font-weight: bold; font-family: monospace; white-space: nowrap; pointer-events: none; box-shadow: 0 1px 4px rgba(0,0,0,0.6);">5m</div>`,
+        iconSize: [0, 0],
+      }),
+      interactive: false,
+    });
+    ringsGroup.addLayer(badge5m);
+
+    // 2. Ring 10m (Medium Proximity Detection Range - Cyan)
+    const circle10m = L.circle(userLatLng, {
+      radius: 10,
+      color: '#06b6d4',
+      weight: 1.5,
+      dashArray: '4, 5',
+      fillColor: '#06b6d4',
+      fillOpacity: 0.05,
+      interactive: false,
+    });
+    ringsGroup.addLayer(circle10m);
+
+    const badge10m = L.marker([userLocation.lat + 10 * deltaLatPerMeter, userLocation.lng], {
+      icon: L.divIcon({
+        className: 'radius-ring-badge',
+        html: `<div style="transform: translate(-50%, -50%); background: rgba(8, 51, 68, 0.9); color: #67e8f9; border: 1px solid #06b6d4; border-radius: 9999px; padding: 1px 5px; font-size: 8.5px; font-weight: bold; font-family: monospace; white-space: nowrap; pointer-events: none; box-shadow: 0 1px 4px rgba(0,0,0,0.6);">10m</div>`,
+        iconSize: [0, 0],
+      }),
+      interactive: false,
+    });
+    ringsGroup.addLayer(badge10m);
+
+    // 3. Ring 20m (Perimeter Search & Walking Horizon Range - Indigo)
+    const circle20m = L.circle(userLatLng, {
+      radius: 20,
+      color: '#818cf8',
+      weight: 1.5,
+      dashArray: '5, 6',
+      fillColor: '#818cf8',
+      fillOpacity: 0.03,
+      interactive: false,
+    });
+    ringsGroup.addLayer(circle20m);
+
+    const badge20m = L.marker([userLocation.lat + 20 * deltaLatPerMeter, userLocation.lng], {
+      icon: L.divIcon({
+        className: 'radius-ring-badge',
+        html: `<div style="transform: translate(-50%, -50%); background: rgba(30, 27, 75, 0.9); color: #c7d2fe; border: 1px solid #818cf8; border-radius: 9999px; padding: 1px 5px; font-size: 8.5px; font-weight: bold; font-family: monospace; white-space: nowrap; pointer-events: none; box-shadow: 0 1px 4px rgba(0,0,0,0.6);">20m</div>`,
+        iconSize: [0, 0],
+      }),
+      interactive: false,
+    });
+    ringsGroup.addLayer(badge20m);
+
+    ringsGroup.addTo(map);
+    radiusRingsLayerRef.current = ringsGroup;
+
+    return () => {
+      if (radiusRingsLayerRef.current) {
+        map.removeLayer(radiusRingsLayerRef.current);
+        radiusRingsLayerRef.current = null;
+      }
+    };
+  }, [userLocation, showRadiusRings]);
 
   // Filter findings for Route Planner
   const selectedRouteFindings = useMemo(() => {
@@ -590,6 +688,26 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
             {showPins ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
           </button>
 
+          {/* Radius Jarak (5m, 10m, 20m) Toggle Button */}
+          <button
+            type="button"
+            onClick={() => setShowRadiusRings(!showRadiusRings)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full backdrop-blur-md border text-xs font-mono shadow-lg active:scale-95 transition-all ${
+              showRadiusRings
+                ? 'bg-gradient-to-r from-emerald-600/90 to-teal-600/90 border-emerald-400 text-white shadow-emerald-950/60 font-bold'
+                : 'bg-slate-900/90 border-slate-700/80 text-slate-400 hover:text-slate-200'
+            }`}
+            title="Tampilkan Lingkaran Radius Jarak 5m, 10m, dan 20m di Sekitar Posisi Pengguna"
+          >
+            <Radar className={`w-3.5 h-3.5 ${showRadiusRings ? 'text-emerald-300 animate-pulse' : 'text-slate-400'}`} />
+            <span>Radius Jarak</span>
+            {showRadiusRings && (
+              <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-emerald-950/90 text-emerald-300 font-bold border border-emerald-500/40">
+                5-20m
+              </span>
+            )}
+          </button>
+
           {/* Route Planner Toggle Button */}
           {findings.length > 0 && (
             <button
@@ -769,6 +887,30 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
 
       {/* Actual Leaflet Map Canvas */}
       <div ref={mapContainerRef} className="w-full h-full z-0" />
+
+      {/* Floating Radius Jarak Legend Chip */}
+      {showRadiusRings && userLocation && !selectedFinding && (
+        <div className="absolute bottom-3 left-3 z-[400] pointer-events-auto flex items-center gap-2 bg-slate-900/90 backdrop-blur-md px-2.5 py-1.5 rounded-2xl border border-slate-700/80 shadow-xl font-mono text-[10px] text-slate-300">
+          <div className="flex items-center gap-1.5 font-bold text-slate-200">
+            <Radar className="w-3.5 h-3.5 text-emerald-400" />
+            <span className="hidden sm:inline">Radius Jarak:</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="flex items-center gap-1" title="Lingkaran 5m: Jangkauan koil pencari & sapuan langsung">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 border border-emerald-300"></span>
+              <span className="text-emerald-300 font-semibold">5m (Koil)</span>
+            </span>
+            <span className="flex items-center gap-1" title="Lingkaran 10m: Jangkauan deteksi anomali menengah">
+              <span className="w-2 h-2 rounded-full bg-cyan-500 border border-cyan-300"></span>
+              <span className="text-cyan-300 font-semibold">10m (Dekat)</span>
+            </span>
+            <span className="flex items-center gap-1" title="Lingkaran 20m: Perimeter luas langkah penjelajahan">
+              <span className="w-2 h-2 rounded-full bg-indigo-500 border border-indigo-300"></span>
+              <span className="text-indigo-300 font-semibold">20m (Luas)</span>
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Selected Finding Details Drawer Modal */}
       {selectedFinding && (
