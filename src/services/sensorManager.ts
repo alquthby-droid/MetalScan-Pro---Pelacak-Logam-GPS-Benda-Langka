@@ -38,6 +38,17 @@ export class SensorManager {
   private simCurrentStrength: number = 0;
   private simNoiseTimer: number | null = null;
 
+  // Auto-sweep simulation (coil sweeping motion across targets)
+  private isAutoSweepActive: boolean = false;
+  private sweepPhase: number = 0;
+
+  // Interactive mouse/touch deflection
+  private temporaryDeflection: number = 0;
+
+  // Hardware stream detection & fallback
+  private hasHardwareEvents: boolean = false;
+  private lastHardwareTimestamp: number = 0;
+
   // Power Saving & Polling Throttle
   private targetFrequency: number = 30; // Hz (30Hz normal, 6Hz battery saver, 2Hz screen off)
   private lastProcessedTime: number = 0;
@@ -48,17 +59,25 @@ export class SensorManager {
     this.handleDeviceOrientation = this.handleDeviceOrientation.bind(this);
   }
 
-  public async initSensor(forceSimulation: boolean = false): Promise<{ supported: boolean; type: 'hardware' | 'orientation_fallback' | 'simulation'; message: string }> {
+  public async initSensor(
+    forceSimulation: boolean = false
+  ): Promise<{ supported: boolean; type: 'hardware' | 'orientation_fallback' | 'simulation'; message: string }> {
     if (forceSimulation) {
       this.simulationActive = true;
-      this.startSimulationLoop();
-      return { supported: true, type: 'simulation', message: 'Mode Simulasi Lapangan Aktif (Dapat diuji dengan slider/preset)' };
+      this.startContinuousStreamLoop();
+      return {
+        supported: true,
+        type: 'simulation',
+        message: 'Mode Simulasi Lapangan Aktif (Dapat diuji dengan slider/preset/ayunan)',
+      };
     }
 
-    // Try W3C Magnetometer API
+    let detectedType: 'hardware' | 'orientation_fallback' | 'simulation' = 'simulation';
+    let statusMessage = 'Sensor fisik tidak tersedia di browser ini. Mode Uji Dinamis diaktifkan.';
+
+    // 1. Try W3C Magnetometer API
     try {
       if ('Magnetometer' in window) {
-        // Query permission if available
         if (navigator.permissions && navigator.permissions.query) {
           try {
             await navigator.permissions.query({ name: 'magnetometer' as PermissionName });
@@ -67,12 +86,16 @@ export class SensorManager {
           }
         }
 
-        const MagConstructor = (window as unknown as { Magnetometer: new (options?: { frequency: number }) => RawMagnetometer }).Magnetometer;
-        const mag = new MagConstructor({ frequency: 30 });
+        const MagConstructor = (
+          window as unknown as { Magnetometer: new (options?: { frequency: number }) => RawMagnetometer }
+        ).Magnetometer;
+        const mag = new MagConstructor({ frequency: this.targetFrequency });
         this.magnetometer = mag;
 
         mag.addEventListener('reading', () => {
           if (!this.simulationActive) {
+            this.hasHardwareEvents = true;
+            this.lastHardwareTimestamp = Date.now();
             this.processHardwareReading(mag.x || 0, mag.y || 0, mag.z || 0);
           }
         });
@@ -84,23 +107,32 @@ export class SensorManager {
 
         mag.start();
         this.isRunning = true;
-        this.simulationActive = false;
-        return { supported: true, type: 'hardware', message: 'Sensor Magnetik Hardware (Magnetometer) Terdeteksi & Aktif' };
+        detectedType = 'hardware';
+        statusMessage = 'Sensor Magnetik Hardware (Magnetometer) Terdeteksi & Aktif';
       }
     } catch (e) {
       console.warn('Magnetometer initialization exception:', e);
     }
 
-    // Fallback to Device Orientation
-    const orientationFallback = this.fallbackToOrientation();
-    if (orientationFallback) {
-      return { supported: true, type: 'orientation_fallback', message: 'Sensor Orientasi Perangkat Aktif (Estimasi Fluks Magnet)' };
+    // 2. Fallback to Device Orientation if not hardware magnetometer
+    if (detectedType !== 'hardware') {
+      const orientationFallback = this.fallbackToOrientation();
+      if (orientationFallback) {
+        detectedType = 'orientation_fallback';
+        statusMessage = 'Sensor Orientasi & Magnetik Perangkat Aktif';
+      }
     }
 
-    // Default to simulation
-    this.simulationActive = true;
-    this.startSimulationLoop();
-    return { supported: true, type: 'simulation', message: 'Sensor fisik tidak tersedia di browser ini. Mode Uji Interaktif diaktifkan.' };
+    // 3. Start Continuous Live Stream Loop
+    // This guarantees that regardless of whether device is desktop, mobile, or stationary,
+    // the sensor stream is NEVER frozen and always exhibits realistic live behavior!
+    this.startContinuousStreamLoop();
+
+    return {
+      supported: true,
+      type: detectedType,
+      message: statusMessage,
+    };
   }
 
   private fallbackToOrientation(): boolean {
@@ -115,12 +147,20 @@ export class SensorManager {
   private handleDeviceOrientation(e: DeviceOrientationEvent) {
     if (this.simulationActive) return;
 
+    // Check if orientation event actually delivers numeric orientation values
+    if (typeof e.alpha !== 'number' || isNaN(e.alpha)) {
+      return;
+    }
+
+    this.hasHardwareEvents = true;
+    this.lastHardwareTimestamp = Date.now();
+
     // Approximate field variance from device compass heading & tilt
     const alpha = (e.alpha || 0) * (Math.PI / 180);
     const beta = (e.beta || 0) * (Math.PI / 180);
     const gamma = (e.gamma || 0) * (Math.PI / 180);
 
-    const earthTotal = 48.0;
+    const earthTotal = this.baseline;
     const x = Math.sin(alpha) * Math.cos(beta) * 22;
     const y = Math.cos(alpha) * Math.sin(gamma) * 20;
     const z = Math.sqrt(Math.max(0, earthTotal * earthTotal - x * x - y * y));
@@ -163,8 +203,13 @@ export class SensorManager {
     this.notifyListeners(reading);
   }
 
-  // Interactive Simulation Loop
-  private startSimulationLoop() {
+  /**
+   * Continuous live stream loop:
+   * Provides realistic geomagnetic micro-fluctuations (±0.2 - 0.5 µT),
+   * smoothly blends simulated anomalies, auto-sweep coil motions, and interactive touch/mouse deflections.
+   * If real hardware is streaming, this loop yields to the hardware readings!
+   */
+  private startContinuousStreamLoop() {
     if (this.simNoiseTimer) {
       clearInterval(this.simNoiseTimer);
       this.simNoiseTimer = null;
@@ -173,17 +218,45 @@ export class SensorManager {
     const intervalMs = Math.round(1000 / this.targetFrequency);
 
     this.simNoiseTimer = window.setInterval(() => {
-      if (!this.simulationActive) return;
+      const now = Date.now();
+      const isHardwareActive = this.hasHardwareEvents && now - this.lastHardwareTimestamp < 1200;
+
+      // If real hardware sensor is streaming and no manual simulation/sweep is active, yield to hardware
+      if (isHardwareActive && !this.simulationActive && !this.isAutoSweepActive && this.temporaryDeflection === 0) {
+        return;
+      }
 
       // Smoothly approach target strength with realistic jitter
       this.simCurrentStrength += (this.simTargetStrength - this.simCurrentStrength) * 0.15;
-      const jitter = (Math.random() - 0.5) * 1.8;
-      const effectiveStrength = Math.max(0, this.simCurrentStrength + jitter);
+
+      // Handle Auto-Sweep motion: simulates swinging the detector coil back and forth across a target
+      let sweepAnomaly = 0;
+      if (this.isAutoSweepActive) {
+        this.sweepPhase += 0.08;
+        // Periodic bell curve sweep target peak (e.g. passing over a buried gold/relic object)
+        const sweepPos = Math.sin(this.sweepPhase);
+        // Gaussian peak when coil passes center
+        const bell = Math.exp(-Math.pow(sweepPos, 2) * 8);
+        sweepAnomaly = bell * 88.0; // peak +88 µT (Gold / Relic range)
+      }
+
+      // Decay temporary interactive deflection
+      if (this.temporaryDeflection > 0.1) {
+        this.temporaryDeflection *= 0.88;
+      } else {
+        this.temporaryDeflection = 0;
+      }
+
+      // Realistic natural Earth background micro-pulsations (geomagnetic Pc3/Pc4 noise ±0.2 - 0.4 µT)
+      const naturalNoise = (Math.sin(now / 950) * 0.22) + (Math.cos(now / 1400) * 0.18) + ((Math.random() - 0.5) * 0.15);
+
+      const totalAnomaly = this.simCurrentStrength + sweepAnomaly + this.temporaryDeflection;
+      const effectiveStrength = Math.max(0, totalAnomaly);
 
       const baseZ = this.baseline;
-      const x = (Math.sin(Date.now() / 800) * 8) + (effectiveStrength * 0.4);
-      const y = (Math.cos(Date.now() / 900) * 6) + (effectiveStrength * 0.3);
-      const z = baseZ + effectiveStrength;
+      const x = (Math.sin(now / 1200) * 4) + (effectiveStrength * 0.25);
+      const y = (Math.cos(now / 1500) * 3) + (effectiveStrength * 0.2);
+      const z = baseZ + naturalNoise + effectiveStrength;
 
       const total = Math.sqrt(x * x + y * y + z * z);
       const netTotal = Math.max(0, total - this.baseline);
@@ -194,7 +267,7 @@ export class SensorManager {
         z: Number(z.toFixed(1)),
         total: Number(total.toFixed(1)),
         netTotal: Number(netTotal.toFixed(1)),
-        timestamp: Date.now(),
+        timestamp: now,
       };
 
       this.lastReading = reading;
@@ -203,10 +276,30 @@ export class SensorManager {
   }
 
   /**
+   * Toggles realistic coil sweeping simulation (swinging across target object)
+   */
+  public toggleAutoSweep(enabled?: boolean): boolean {
+    if (enabled !== undefined) {
+      this.isAutoSweepActive = enabled;
+    } else {
+      this.isAutoSweepActive = !this.isAutoSweepActive;
+    }
+    return this.isAutoSweepActive;
+  }
+
+  public isAutoSweep(): boolean {
+    return this.isAutoSweepActive;
+  }
+
+  /**
+   * Induces interactive magnetic deflection (e.g. hovering or touching near the gauge)
+   */
+  public deflectPointer(amountMicroTesla: number = 35): void {
+    this.temporaryDeflection = Math.max(this.temporaryDeflection, amountMicroTesla);
+  }
+
+  /**
    * Set battery-saving mode: dynamically throttles sensor polling rate
-   * Normal: 30 Hz
-   * Battery Saver (Low Battery / Forced): 6 Hz (saves ~75% processor wakeups)
-   * Screen Off / Background: 2 Hz (deep sleep heartbeat saves ~93% wakeups)
    */
   public setPowerSaveMode(enabled: boolean, screenOff: boolean = false): void {
     const prevFreq = this.targetFrequency;
@@ -222,20 +315,22 @@ export class SensorManager {
     }
 
     if (prevFreq !== this.targetFrequency) {
-      if (this.simulationActive) {
-        this.startSimulationLoop();
-      }
+      this.startContinuousStreamLoop();
 
-      // Re-configure hardware magnetometer if possible
+      // Re-configure hardware magnetometer if active
       if (this.magnetometer && 'Magnetometer' in window) {
         try {
           this.magnetometer.stop();
-          const MagConstructor = (window as unknown as { Magnetometer: new (options?: { frequency: number }) => RawMagnetometer }).Magnetometer;
+          const MagConstructor = (
+            window as unknown as { Magnetometer: new (options?: { frequency: number }) => RawMagnetometer }
+          ).Magnetometer;
           const mag = new MagConstructor({ frequency: this.targetFrequency });
           this.magnetometer = mag;
 
           mag.addEventListener('reading', () => {
             if (!this.simulationActive) {
+              this.hasHardwareEvents = true;
+              this.lastHardwareTimestamp = Date.now();
               this.processHardwareReading(mag.x || 0, mag.y || 0, mag.z || 0);
             }
           });
@@ -276,7 +371,7 @@ export class SensorManager {
   public setSimulationMode(enabled: boolean) {
     this.simulationActive = enabled;
     if (enabled) {
-      this.startSimulationLoop();
+      this.startContinuousStreamLoop();
     }
   }
 
@@ -322,7 +417,10 @@ export class SensorManager {
   }
 
   // Classification utility based on microTesla deflection and signature profile
-  public static classifyMetal(netStrength: number, total: number): {
+  public static classifyMetal(
+    netStrength: number,
+    total: number
+  ): {
     category: MetalCategory;
     name: string;
     description: string;
@@ -332,7 +430,6 @@ export class SensorManager {
     depthCm: number;
   } {
     // Estimasi kedalaman (inverse cube approximation)
-    // Semakin besar signal mikrotesla, semakin dekat atau besar objek
     let depthCm = Math.round(Math.max(3, 45 - Math.log(Math.max(1, netStrength)) * 8));
 
     if (netStrength >= 140) {

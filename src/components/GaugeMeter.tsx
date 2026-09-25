@@ -1,6 +1,6 @@
-import React from 'react';
-import { Sparkles, Radio, Compass, Disc, Flashlight, Activity } from 'lucide-react';
-import { SensorManager } from '../services/sensorManager';
+import React, { useState } from 'react';
+import { Sparkles, Radio, Compass, Disc, Flashlight, Activity, Play, Pause } from 'lucide-react';
+import { SensorManager, sensorManager } from '../services/sensorManager';
 import { DriftMonitorState } from '../types/detector';
 
 interface GaugeMeterProps {
@@ -24,6 +24,17 @@ export const GaugeMeter: React.FC<GaugeMeterProps> = ({
   driftState,
   onOpenDriftMonitor,
 }) => {
+  const [isSweeping, setIsSweeping] = useState<boolean>(() => sensorManager.isAutoSweep());
+
+  const handleToggleSweep = () => {
+    const next = sensorManager.toggleAutoSweep();
+    setIsSweeping(next);
+  };
+
+  const handleInteractiveDeflect = () => {
+    sensorManager.deflectPointer(45);
+  };
+
   // Classification
   const classification = SensorManager.classifyMetal(netStrength, totalStrength);
 
@@ -85,6 +96,24 @@ export const GaugeMeter: React.FC<GaugeMeterProps> = ({
 
           <button
             type="button"
+            onClick={handleToggleSweep}
+            className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-mono font-medium rounded-full border transition-all active:scale-95 ${
+              isSweeping
+                ? 'bg-emerald-500/25 text-emerald-300 border-emerald-500/60 shadow-sm shadow-emerald-900/50 animate-pulse'
+                : 'bg-slate-800/90 hover:bg-slate-700 text-slate-300 border-slate-700'
+            }`}
+            title={isSweeping ? 'Matikan Simulasi Ayunan Koil' : 'Mulai Simulasi Ayunan Koil (Deteksi Dinamis)'}
+          >
+            {isSweeping ? (
+              <Pause className="w-3.5 h-3.5 text-emerald-400" />
+            ) : (
+              <Play className="w-3.5 h-3.5 text-cyan-400" />
+            )}
+            <span>{isSweeping ? 'Ayunan Aktif' : 'Uji Ayunan'}</span>
+          </button>
+
+          <button
+            type="button"
             onClick={onTareZero}
             className="flex items-center gap-1.5 px-3 py-1 text-xs font-mono font-medium rounded-full bg-slate-800/90 hover:bg-slate-700 text-cyan-300 border border-cyan-500/30 hover:border-cyan-500/60 shadow-sm transition-all active:scale-95"
             title="Kalibrasi Tara Nol: Mengurangi medan magnet bumi lokal agar anomali logam lebih presisi"
@@ -96,7 +125,12 @@ export const GaugeMeter: React.FC<GaugeMeterProps> = ({
       </div>
 
       {/* Main Gauge Graphic */}
-      <div className="relative flex flex-col items-center justify-center my-1 select-none">
+      <div
+        className="relative flex flex-col items-center justify-center my-1 select-none cursor-pointer"
+        onClick={handleInteractiveDeflect}
+        onMouseMove={handleInteractiveDeflect}
+        title="Klik atau usap dial untuk menguji defleksi medan magnet"
+      >
         <svg className="w-64 h-48 overflow-visible" viewBox="0 0 200 150">
           <defs>
             <linearGradient id="gaugeGradient" x1="0%" y1="0%" x2="100%" y2="0%">

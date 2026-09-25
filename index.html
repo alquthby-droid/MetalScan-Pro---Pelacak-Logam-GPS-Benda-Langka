@@ -19,20 +19,92 @@
     <link rel="alternate icon" href="/favicon.ico" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
     <script>
-      // Gracefully prevent unhandled WebSocket proxy rejections in iframe dev environment
-      window.addEventListener('unhandledrejection', function (e) {
-        var str = (e && e.reason && (e.reason.message || String(e.reason))) || '';
-        if (str.indexOf('WebSocket') !== -1 || str.indexOf('[vite]') !== -1 || str.indexOf('ws:') !== -1) {
-          e.preventDefault();
+      (function() {
+        // Intercept console.error & console.warn for [vite] HMR websocket errors
+        var origError = console.error;
+        console.error = function() {
+          var msg = '';
+          for (var i = 0; i < arguments.length; i++) {
+            var arg = arguments[i];
+            msg += ' ' + (typeof arg === 'object' && arg ? (arg.message || arg.stack || JSON.stringify(arg)) : String(arg));
+          }
+          if (msg.indexOf('[vite]') !== -1 || msg.indexOf('WebSocket') !== -1 || msg.indexOf('websocket') !== -1) {
+            return;
+          }
+          origError.apply(console, arguments);
+        };
+
+        var origWarn = console.warn;
+        console.warn = function() {
+          var msg = '';
+          for (var i = 0; i < arguments.length; i++) {
+            var arg = arguments[i];
+            msg += ' ' + (typeof arg === 'object' && arg ? (arg.message || arg.stack || JSON.stringify(arg)) : String(arg));
+          }
+          if (msg.indexOf('[vite]') !== -1 || msg.indexOf('WebSocket') !== -1 || msg.indexOf('websocket') !== -1) {
+            return;
+          }
+          origWarn.apply(console, arguments);
+        };
+
+        // Quiet Vite HMR WebSocket proxy
+        if (typeof window !== 'undefined' && typeof window.WebSocket !== 'undefined') {
+          var RealWebSocket = window.WebSocket;
+          function QuietViteWebSocket(url, protocols) {
+            var isVite = (protocols === 'vite-hmr') ||
+              (Array.isArray(protocols) && protocols.indexOf('vite-hmr') !== -1) ||
+              (typeof url === 'string' && (url.indexOf('token=') !== -1 || url.indexOf('3000') !== -1));
+
+            if (isVite) {
+              var target = new EventTarget();
+              target.url = url;
+              target.protocols = protocols;
+              target.readyState = 1; // WebSocket.OPEN
+              target.CONNECTING = 0;
+              target.OPEN = 1;
+              target.CLOSING = 2;
+              target.CLOSED = 3;
+              target.send = function() {};
+              target.close = function() {
+                target.readyState = 3;
+              };
+              setTimeout(function() {
+                if (typeof target.onopen === 'function') {
+                  try { target.onopen(new Event('open')); } catch (e) {}
+                }
+                try { target.dispatchEvent(new Event('open')); } catch (e) {}
+              }, 10);
+              return target;
+            }
+            return new RealWebSocket(url, protocols);
+          }
+          QuietViteWebSocket.prototype = RealWebSocket.prototype;
+          QuietViteWebSocket.CONNECTING = 0;
+          QuietViteWebSocket.OPEN = 1;
+          QuietViteWebSocket.CLOSING = 2;
+          QuietViteWebSocket.CLOSED = 3;
+          window.WebSocket = QuietViteWebSocket;
         }
-      });
-      window.addEventListener('error', function (e) {
-        var str = (e && (e.message || String(e))) || '';
-        if (str.indexOf('WebSocket') !== -1 || str.indexOf('[vite]') !== -1 || str.indexOf('ws:') !== -1) {
-          e.preventDefault();
-          e.stopPropagation();
-        }
-      }, true);
+
+        // Prevent unhandled WebSocket proxy rejections in iframe dev environment
+        window.addEventListener('unhandledrejection', function(e) {
+          var str = (e && e.reason && (e.reason.message || String(e.reason))) || '';
+          if (str.indexOf('WebSocket') !== -1 || str.indexOf('[vite]') !== -1 || str.indexOf('ws:') !== -1) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+          }
+        }, true);
+
+        window.addEventListener('error', function(e) {
+          var str = (e && (e.message || String(e))) || '';
+          if (str.indexOf('WebSocket') !== -1 || str.indexOf('[vite]') !== -1 || str.indexOf('ws:') !== -1) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+          }
+        }, true);
+      })();
     </script>
   </head>
   <body class="bg-slate-950 text-slate-100 select-none overflow-x-hidden antialiased">

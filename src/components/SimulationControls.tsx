@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Sliders, Sparkles, AlertCircle, PlayCircle, RefreshCw, Flashlight } from 'lucide-react';
+import { Sliders, Sparkles, AlertCircle, PlayCircle, RefreshCw, Flashlight, Activity, Play, Pause } from 'lucide-react';
 import { sensorManager } from '../services/sensorManager';
 
 interface SimulationControlsProps {
@@ -17,6 +17,12 @@ export const SimulationControls: React.FC<SimulationControlsProps> = ({
 }) => {
   const [testSlider, setTestSlider] = useState<number>(0);
   const [isExpanded, setIsExpanded] = useState<boolean>(false);
+  const [isSweeping, setIsSweeping] = useState<boolean>(() => sensorManager.isAutoSweep());
+
+  const handleToggleSweep = () => {
+    const next = sensorManager.toggleAutoSweep();
+    setIsSweeping(next);
+  };
 
   const applyTestAnomaly = (extraStrength: number) => {
     setTestSlider(extraStrength);
@@ -59,14 +65,34 @@ export const SimulationControls: React.FC<SimulationControlsProps> = ({
           </span>
         </div>
 
-        <button
-          type="button"
-          onClick={() => setIsExpanded(!isExpanded)}
-          className="text-xs font-mono text-cyan-400 hover:text-cyan-300 flex items-center gap-1 bg-slate-800 px-2.5 py-1 rounded-lg border border-slate-700 transition-colors"
-        >
-          <Sliders className="w-3.5 h-3.5" />
-          <span>{isExpanded ? 'Tutup Kontrol Uji' : 'Panel Uji Coba Logam'}</span>
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleToggleSweep}
+            className={`text-xs font-mono flex items-center gap-1.5 px-2.5 py-1 rounded-lg border transition-all active:scale-95 ${
+              isSweeping
+                ? 'bg-emerald-500/25 text-emerald-300 border-emerald-500/60 shadow-sm animate-pulse'
+                : 'bg-slate-800 text-slate-300 hover:text-white border-slate-700'
+            }`}
+            title="Simulasikan ayunan koil pencari bolak-balik di atas target logam"
+          >
+            {isSweeping ? (
+              <Pause className="w-3.5 h-3.5 text-emerald-400" />
+            ) : (
+              <Play className="w-3.5 h-3.5 text-cyan-400" />
+            )}
+            <span>{isSweeping ? 'Ayunan: Aktif' : 'Uji Ayunan'}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setIsExpanded(!isExpanded)}
+            className="text-xs font-mono text-cyan-400 hover:text-cyan-300 flex items-center gap-1 bg-slate-800 px-2.5 py-1 rounded-lg border border-slate-700 transition-colors"
+          >
+            <Sliders className="w-3.5 h-3.5" />
+            <span>{isExpanded ? 'Tutup' : 'Uji Logam'}</span>
+          </button>
+        </div>
       </div>
 
       {isExpanded && (

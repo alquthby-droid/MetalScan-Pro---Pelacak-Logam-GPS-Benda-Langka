@@ -78,6 +78,7 @@ import { WeatherBadgeHeader } from './components/WeatherBadgeHeader';
 import { WeatherSafetyModal } from './components/WeatherSafetyModal';
 import { ExcavationSafetyBanner } from './components/ExcavationSafetyBanner';
 import { NightModeToggle } from './components/NightModeToggle';
+import { trailService } from './services/trailService';
 import { Cloud, Eye } from 'lucide-react';
 
 const DEFAULT_SETTINGS: DetectorSettings = {
@@ -367,6 +368,11 @@ export default function App() {
   const isSpikeActiveRef = useRef<boolean>(false);
   const spikePeakReadingRef = useRef<MagneticReading | null>(null);
   const latestLocationRef = useRef<GPSLocation | null>(null);
+  const currentReadingRef = useRef<MagneticReading>(currentReading);
+
+  useEffect(() => {
+    currentReadingRef.current = currentReading;
+  }, [currentReading]);
 
   // Persist findings
   useEffect(() => {
@@ -434,8 +440,20 @@ export default function App() {
 
       unsubscribe = sensorManager.subscribe((reading) => {
         setCurrentReading(reading);
+        currentReadingRef.current = reading;
         if (settings.driftMonitorEnabled ?? true) {
           driftMonitorService.updateReading(reading, isSpikeActiveRef.current);
+        }
+
+        if (latestLocationRef.current) {
+          trailService.recordPoint(
+            latestLocationRef.current.lat,
+            latestLocationRef.current.lng,
+            latestLocationRef.current.accuracy,
+            reading.total,
+            reading.netTotal,
+            sensorManager.getBaseline()
+          );
         }
       });
 
@@ -499,6 +517,14 @@ export default function App() {
         setUserLocation(loc);
         latestLocationRef.current = loc;
         targetCenterAlarmService.updateUserLocation(loc.lat, loc.lng);
+        trailService.recordPoint(
+          loc.lat,
+          loc.lng,
+          loc.accuracy,
+          currentReadingRef.current.total,
+          currentReadingRef.current.netTotal,
+          sensorManager.getBaseline()
+        );
       },
       (err) => {
         console.warn('Geolocation watch error:', err.message);
@@ -617,6 +643,18 @@ export default function App() {
       };
 
       setFindings((prev) => [newFinding, ...prev]);
+
+      // Record point in trail service as confirmed anomaly
+      trailService.recordPoint(
+        loc.lat,
+        loc.lng,
+        loc.accuracy || 5,
+        reading.total,
+        reading.netTotal,
+        sensorManager.getBaseline(),
+        true,
+        { name: classification.name, category: classification.category }
+      );
 
       // Sound chime and celebratory visual alert
       audioService.playAlertBeep(true);
@@ -1304,6 +1342,8 @@ export default function App() {
             <FindingsList
               findings={findings}
               userLocation={userLocation}
+              baseline={baseline}
+              threshold={settings.autoSaveThreshold}
               onDeleteFinding={handleDeleteFinding}
               onClearAll={handleClearAllFindings}
               onUpdateNote={handleUpdateNote}

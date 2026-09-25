@@ -28,6 +28,7 @@ import {
   Navigation2,
   Compass,
   Mountain,
+  TrendingUp,
 } from 'lucide-react';
 import { exportFindingsToCSV, exportFindingsToPDF } from '../services/exportService';
 import { geminiService } from '../services/geminiService';
@@ -42,10 +43,13 @@ import {
   getCardinalDirectionIndo,
 } from '../data/ntbPriorityFindings';
 import { GpsCompassModal } from './GpsCompassModal';
+import { TrailReportModal } from './TrailReportModal';
 
 interface FindingsListProps {
   findings: MetalFinding[];
   userLocation?: GPSLocation | null;
+  baseline?: number;
+  threshold?: number;
   onDeleteFinding: (id: string) => void;
   onClearAll: () => void;
   onUpdateNote: (id: string, note: string) => void;
@@ -64,6 +68,8 @@ interface FindingsListProps {
 export const FindingsList: React.FC<FindingsListProps> = ({
   findings,
   userLocation,
+  baseline = 48.0,
+  threshold = 70.0,
   onDeleteFinding,
   onClearAll,
   onUpdateNote,
@@ -86,6 +92,7 @@ export const FindingsList: React.FC<FindingsListProps> = ({
     onCategoryChange?.(cat);
   };
 
+  const [isTrailReportOpen, setIsTrailReportOpen] = useState<boolean>(false);
   const [activeTabMode, setActiveTabMode] = useState<'my_findings' | 'ntb_priority'>('my_findings');
   const [isCompassModalOpen, setIsCompassModalOpen] = useState<boolean>(false);
   const [selectedCompassTarget, setSelectedCompassTarget] = useState<NTBPriorityFinding>(NTB_PRIORITY_FINDINGS[0]);
@@ -490,6 +497,17 @@ export const FindingsList: React.FC<FindingsListProps> = ({
 
         {findings.length > 0 && (
           <div className="flex items-center gap-2 flex-wrap">
+            {/* Laporan Jejak (GPS Path Magnetic Trend) Button */}
+            <button
+              type="button"
+              onClick={() => setIsTrailReportOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-cyan-600/25 hover:bg-cyan-600/35 text-cyan-300 border border-cyan-500/40 text-xs font-mono font-medium transition-all shadow-sm active:scale-95"
+              title="Buka Laporan Jejak: Grafik garis tren kekuatan medan magnet sepanjang jalur GPS"
+            >
+              <TrendingUp className="w-3.5 h-3.5 text-cyan-400" />
+              <span>Laporan Jejak</span>
+            </button>
+
             {/* Gemini Hotspots Suggestion Button */}
             {onOpenHotspotsModal && (
               <button
@@ -653,6 +671,34 @@ export const FindingsList: React.FC<FindingsListProps> = ({
           </div>
           <div className="text-xl font-bold font-mono text-slate-200 mt-1">{otherCount} Titik</div>
         </button>
+      </div>
+
+      {/* Banner Laporan Jejak Medan Magnetik (GPS Path Trend) */}
+      <div
+        onClick={() => setIsTrailReportOpen(true)}
+        className="cursor-pointer p-3 sm:p-3.5 rounded-2xl bg-gradient-to-r from-slate-950 via-cyan-950/40 to-slate-950 border border-cyan-500/40 hover:border-cyan-400/80 transition-all flex items-center justify-between gap-3 text-xs font-mono shadow-lg group select-none"
+      >
+        <div className="flex items-center gap-3">
+          <div className="p-2.5 rounded-2xl bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 group-hover:scale-105 transition-transform shrink-0">
+            <TrendingUp className="w-5 h-5 text-cyan-400" />
+          </div>
+          <div>
+            <div className="font-bold text-slate-100 flex items-center gap-2 flex-wrap">
+              <span>Laporan Jejak Medan Magnetik (GPS)</span>
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 font-semibold">
+                Grafik Garis Tren
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-400 font-sans mt-0.5">
+              Visualisasi tren kekuatan medan magnetik sepanjang lintasan GPS yang Anda lewati untuk melihat bagaimana anomali terbentuk.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1 text-cyan-400 font-bold text-xs shrink-0 group-hover:translate-x-1 transition-transform">
+          <span className="hidden sm:inline">Lihat Grafik</span>
+          <span>→</span>
+        </div>
       </div>
 
       {/* Target Center Sensor Alarm HUD Banner when an alarm is active (ONLINE) */}
@@ -1688,6 +1734,24 @@ export const FindingsList: React.FC<FindingsListProps> = ({
             depthEstimateCm: selectedCompassTarget.estimatedDepthCm,
             autoSaved: false,
           });
+        }}
+      />
+
+      {/* Laporan Jejak Medan Magnetik (GPS Path Trend) Modal */}
+      <TrailReportModal
+        isOpen={isTrailReportOpen}
+        onClose={() => setIsTrailReportOpen(false)}
+        baseline={baseline}
+        threshold={threshold}
+        userLat={userLocation?.lat}
+        userLng={userLocation?.lng}
+        findings={findings}
+        onNavigateToFinding={(id) => {
+          setIsTrailReportOpen(false);
+          const f = findings.find((item) => item.id === id);
+          if (f) {
+            onNavigateToMap(f);
+          }
         }}
       />
     </div>
