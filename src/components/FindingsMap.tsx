@@ -33,6 +33,12 @@ import {
   Vibrate,
   ShieldAlert,
   X,
+  Globe,
+  Mountain,
+  Map,
+  ChevronDown,
+  Moon,
+  Tag,
 } from 'lucide-react';
 import { audioService } from '../services/audioSynthesizer';
 import { SoilDepthIndicator } from './SoilDepthIndicator';
@@ -66,6 +72,8 @@ const CATEGORY_FILTER_OPTIONS: { id: MetalCategory | 'all' | 'favorite'; label: 
   { id: 'iron', label: 'Besi', symbol: '⛏', color: '#94a3b8', activeBg: 'bg-slate-700/50', activeBorder: 'border-slate-500' },
 ];
 
+export type MapBaseLayerType = 'map' | 'satellite' | 'terrain' | 'opentopo' | 'dark';
+
 export const FindingsMap: React.FC<FindingsMapProps> = ({
   findings,
   userLocation,
@@ -88,7 +96,10 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
   const safeDistanceZonesLayerRef = useRef<L.LayerGroup | null>(null);
   const baseLayersRef = useRef<{ [key: string]: L.TileLayer }>({});
 
-  const [activeLayer, setActiveLayer] = useState<'dark' | 'satellite'>('dark');
+  const [activeLayer, setActiveLayer] = useState<MapBaseLayerType>('satellite');
+  const [showLabels, setShowLabels] = useState<boolean>(true);
+  const [showHillshade, setShowHillshade] = useState<boolean>(false);
+  const [isLayerMenuOpen, setIsLayerMenuOpen] = useState<boolean>(false);
   const [showHeatmap, setShowHeatmap] = useState<boolean>(true);
   const [showRadiusRings, setShowRadiusRings] = useState<boolean>(true);
   const [showPins, setShowPins] = useState<boolean>(true);
@@ -106,6 +117,7 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
     timestamp: number;
   } | null>(null);
   const [dismissedNearbyFindingId, setDismissedNearbyFindingId] = useState<string | null>(null);
+  const dismissedNearbyFindingIdRef = useRef<string | null>(null);
   const [isAlarmTestSimulated, setIsAlarmTestSimulated] = useState<boolean>(false);
   const lastAlarmTriggerTimeRef = useRef<{ [findingId: string]: number }>({});
 
@@ -126,7 +138,20 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
       const kept = prev.filter((id) => validIdSet.has(id));
       // If none selected or all were previously selected, select all
       if (kept.length === 0 || kept.length >= findings.length - 1) {
-        return findings.map((f) => f.id);
+        const allIds = findings.map((f) => f.id);
+        if (
+          prev.length === allIds.length &&
+          prev.every((id, idx) => id === allIds[idx])
+        ) {
+          return prev;
+        }
+        return allIds;
+      }
+      if (
+        prev.length === kept.length &&
+        prev.every((id, idx) => id === kept[idx])
+      ) {
+        return prev;
       }
       return kept;
     });
@@ -179,12 +204,22 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
 
     mapInstanceRef.current = map;
 
-    // Define Tile Layers
+    // Define Tile Layers & Overlays
+    const mapTileLayer = L.tileLayer(
+      'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+      {
+        maxZoom: 19,
+        subdomains: 'abcd',
+        attribution: 'CartoDB Voyager',
+      }
+    );
+
     const darkTileLayer = L.tileLayer(
       'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
       {
         maxZoom: 19,
         subdomains: 'abcd',
+        attribution: 'CartoDB Dark',
       }
     );
 
@@ -192,15 +227,63 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
       'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
       {
         maxZoom: 19,
+        attribution: 'Esri World Imagery',
+      }
+    );
+
+    const terrainTileLayer = L.tileLayer(
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+      {
+        maxZoom: 19,
+        attribution: 'Esri World Topo Map',
+      }
+    );
+
+    const openTopoTileLayer = L.tileLayer(
+      'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
+      {
+        maxZoom: 17,
+        subdomains: 'abc',
+        attribution: 'OpenTopoMap',
+      }
+    );
+
+    const labelsOverlay = L.tileLayer(
+      'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
+      {
+        maxZoom: 19,
+        pane: 'overlayPane',
+      }
+    );
+
+    const hillshadeOverlay = L.tileLayer(
+      'https://server.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer/tile/{z}/{y}/{x}',
+      {
+        maxZoom: 19,
+        opacity: 0.45,
+        pane: 'overlayPane',
       }
     );
 
     baseLayersRef.current = {
+      map: mapTileLayer,
       dark: darkTileLayer,
       satellite: satelliteTileLayer,
+      terrain: terrainTileLayer,
+      opentopo: openTopoTileLayer,
+      labels: labelsOverlay,
+      hillshade: hillshadeOverlay,
     };
 
-    darkTileLayer.addTo(map);
+    const initialBaseLayer = baseLayersRef.current[activeLayer] || satelliteTileLayer;
+    initialBaseLayer.addTo(map);
+
+    if (showLabels && labelsOverlay) {
+      labelsOverlay.addTo(map);
+    }
+    if (showHillshade && hillshadeOverlay) {
+      hillshadeOverlay.addTo(map);
+    }
 
     const markersLayer = L.layerGroup().addTo(map);
     markersLayerRef.current = markersLayer;
@@ -219,20 +302,45 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
     };
   }, []);
 
-  // Update Base Layer (Dark vs Satellite)
+  // Update Base Layer & Overlays (Map, Satellite, Terrain, OpenTopo, Dark, Labels, Hillshade)
   useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map || !baseLayersRef.current) return;
 
-    const { dark, satellite } = baseLayersRef.current;
-    if (activeLayer === 'dark') {
-      if (map.hasLayer(satellite)) map.removeLayer(satellite);
-      if (!map.hasLayer(dark)) map.addLayer(dark);
-    } else {
-      if (map.hasLayer(dark)) map.removeLayer(dark);
-      if (!map.hasLayer(satellite)) map.addLayer(satellite);
+    const { map: mapBase, dark, satellite, terrain, opentopo, labels, hillshade } = baseLayersRef.current;
+    const baseLayers = [mapBase, dark, satellite, terrain, opentopo];
+
+    // Remove inactive base layers
+    baseLayers.forEach((layer) => {
+      if (layer && map.hasLayer(layer)) {
+        map.removeLayer(layer);
+      }
+    });
+
+    // Add active base layer
+    const targetLayer = baseLayersRef.current[activeLayer];
+    if (targetLayer && !map.hasLayer(targetLayer)) {
+      map.addLayer(targetLayer);
     }
-  }, [activeLayer]);
+
+    // Toggle Labels overlay
+    if (labels) {
+      if (showLabels && !map.hasLayer(labels)) {
+        map.addLayer(labels);
+      } else if (!showLabels && map.hasLayer(labels)) {
+        map.removeLayer(labels);
+      }
+    }
+
+    // Toggle Hillshade overlay
+    if (hillshade) {
+      if (showHillshade && !map.hasLayer(hillshade)) {
+        map.addLayer(hillshade);
+      } else if (!showHillshade && map.hasLayer(hillshade)) {
+        map.removeLayer(hillshade);
+      }
+    }
+  }, [activeLayer, showLabels, showHillshade]);
 
   // Update User Location Marker
   useEffect(() => {
@@ -383,7 +491,7 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
   useEffect(() => {
     if (!isSafeAlarmEnabled || !userLocation) {
       if (!isAlarmTestSimulated) {
-        setActiveNearbyFinding(null);
+        setActiveNearbyFinding((prev) => (prev === null ? null : null));
       }
       return;
     }
@@ -391,7 +499,7 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
     if (isAlarmTestSimulated) return;
 
     if (favoriteFindings.length === 0) {
-      setActiveNearbyFinding(null);
+      setActiveNearbyFinding((prev) => (prev === null ? null : null));
       return;
     }
 
@@ -409,17 +517,27 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
 
     if (closestTarget) {
       const targetId = closestTarget.finding.id;
+      const dist = Number(closestTarget.distance.toFixed(1));
       const now = Date.now();
       const lastTriggered = lastAlarmTriggerTimeRef.current[targetId] || 0;
 
-      setActiveNearbyFinding({
-        finding: closestTarget.finding,
-        distanceMeters: Number(closestTarget.distance.toFixed(1)),
-        timestamp: now,
+      setActiveNearbyFinding((prev) => {
+        if (
+          prev &&
+          prev.finding.id === targetId &&
+          Math.abs(prev.distanceMeters - dist) < 0.2
+        ) {
+          return prev;
+        }
+        return {
+          finding: closestTarget.finding,
+          distanceMeters: dist,
+          timestamp: now,
+        };
       });
 
       // Fire audio alarm and vibration if not dismissed and debounce passed (> 10s)
-      if (dismissedNearbyFindingId !== targetId && now - lastTriggered > 10000) {
+      if (dismissedNearbyFindingIdRef.current !== targetId && now - lastTriggered > 10000) {
         lastAlarmTriggerTimeRef.current[targetId] = now;
 
         if (!isSafeAlarmMuted) {
@@ -435,17 +553,18 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
         }
       }
     } else {
-      setActiveNearbyFinding(null);
-      if (dismissedNearbyFindingId) {
+      setActiveNearbyFinding((prev) => (prev === null ? null : null));
+      if (dismissedNearbyFindingIdRef.current) {
+        dismissedNearbyFindingIdRef.current = null;
         setDismissedNearbyFindingId(null);
       }
     }
   }, [
-    userLocation,
+    userLocation?.lat,
+    userLocation?.lng,
     favoriteFindings,
     isSafeAlarmEnabled,
     isSafeAlarmMuted,
-    dismissedNearbyFindingId,
     isAlarmTestSimulated,
   ]);
 
@@ -504,11 +623,12 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
         safeDistanceZonesLayerRef.current = null;
       }
     };
-  }, [favoriteFindings, isSafeAlarmEnabled, activeNearbyFinding]);
+  }, [favoriteFindings, isSafeAlarmEnabled, activeNearbyFinding?.finding.id]);
 
   // Quick test simulation for Safe Distance Alarm (< 3m)
   const handleTestSafeAlarm = () => {
     setIsAlarmTestSimulated(true);
+    dismissedNearbyFindingIdRef.current = null;
     setDismissedNearbyFindingId(null);
 
     const candidate = favoriteFindings[0] || findings[0] || {
@@ -945,16 +1065,67 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
             </button>
           )}
 
-          {/* Layer switcher */}
-          <button
-            type="button"
-            onClick={() => setActiveLayer(activeLayer === 'dark' ? 'satellite' : 'dark')}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-900/90 backdrop-blur-md border border-slate-700/80 text-xs font-mono text-slate-300 hover:text-white shadow-lg active:scale-95 transition-all"
-            title="Ganti Tampilan Peta Satelit / Gelap"
-          >
-            <Layers className="w-3.5 h-3.5 text-cyan-400" />
-            <span className="hidden sm:inline">{activeLayer === 'dark' ? 'Satelit' : 'Taktis Gelap'}</span>
-          </button>
+          {/* Opsi Pengalihan Layer Peta: Map, Satellite, Terrain */}
+          <div className="flex items-center p-0.5 rounded-full bg-slate-900/95 backdrop-blur-md border border-slate-700/80 shadow-lg font-mono text-xs">
+            {/* 1. Map */}
+            <button
+              type="button"
+              onClick={() => setActiveLayer('map')}
+              className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold transition-all active:scale-95 ${
+                activeLayer === 'map'
+                  ? 'bg-cyan-500 text-slate-950 shadow-md font-bold'
+                  : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
+              }`}
+              title="Layer Peta Standar / Vektor Jalan (Map)"
+            >
+              <Map className="w-3 h-3" />
+              <span>Map</span>
+            </button>
+
+            {/* 2. Satellite */}
+            <button
+              type="button"
+              onClick={() => setActiveLayer('satellite')}
+              className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold transition-all active:scale-95 ${
+                activeLayer === 'satellite'
+                  ? 'bg-sky-500 text-slate-950 shadow-md font-bold'
+                  : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
+              }`}
+              title="Layer Citra Satelit Udara Resolusi Tinggi (Satellite)"
+            >
+              <Globe className="w-3 h-3" />
+              <span>Satellite</span>
+            </button>
+
+            {/* 3. Terrain */}
+            <button
+              type="button"
+              onClick={() => setActiveLayer('terrain')}
+              className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold transition-all active:scale-95 ${
+                activeLayer === 'terrain'
+                  ? 'bg-emerald-500 text-slate-950 shadow-md font-bold'
+                  : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
+              }`}
+              title="Layer Topografi Medan & Kontur Elevasi (Terrain)"
+            >
+              <Mountain className="w-3 h-3" />
+              <span>Terrain</span>
+            </button>
+
+            {/* Dropdown for More / Custom Layers */}
+            <button
+              type="button"
+              onClick={() => setIsLayerMenuOpen(!isLayerMenuOpen)}
+              className={`p-1.5 rounded-full transition-all text-slate-400 hover:text-white ${
+                isLayerMenuOpen || activeLayer === 'dark' || activeLayer === 'opentopo'
+                  ? 'bg-slate-800 text-cyan-400'
+                  : 'hover:bg-slate-800/60'
+              }`}
+              title="Opsi Lapisan Lainnya & Pengaturan Overlay (Taktis Gelap, Kontur Ekstrem, Label, Relief)"
+            >
+              <ChevronDown className={`w-3 h-3 transition-transform duration-200 ${isLayerMenuOpen ? 'rotate-180' : ''}`} />
+            </button>
+          </div>
 
           {/* Gemini AI Hotspots Suggestion */}
           {findings.length > 0 && onOpenHotspotsModal && (
@@ -1097,6 +1268,307 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
       {/* Actual Leaflet Map Canvas */}
       <div ref={mapContainerRef} className="w-full h-full z-0" />
 
+      {/* Floating Tactical Layer & Terrain Selection Panel Modal */}
+      {isLayerMenuOpen && (
+        <>
+          {/* Backdrop click to close */}
+          <div
+            className="absolute inset-0 z-[480] bg-black/40 backdrop-blur-[2px] pointer-events-auto"
+            onClick={() => setIsLayerMenuOpen(false)}
+          />
+
+          {/* Floating Card */}
+          <div className="absolute top-14 right-3 sm:right-4 z-[490] w-84 sm:w-96 max-w-[calc(100vw-24px)] max-h-[calc(100%-70px)] overflow-y-auto no-scrollbar bg-slate-950/95 backdrop-blur-xl border border-slate-700/90 rounded-3xl p-4 shadow-2xl shadow-black/90 animate-in fade-in zoom-in-95 duration-150 pointer-events-auto text-slate-200 space-y-3 ring-1 ring-white/10">
+            {/* Header */}
+            <div className="flex items-center justify-between pb-2.5 border-b border-slate-800">
+              <div className="flex items-center gap-2">
+                <div className="p-2 rounded-xl bg-cyan-500/20 text-cyan-400 border border-cyan-500/30">
+                  <Layers className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 className="text-xs font-bold font-mono text-white flex items-center gap-1.5">
+                    <span>Visual Medan & Lapisan Peta</span>
+                    <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                      Survei Terbuka
+                    </span>
+                  </h4>
+                  <p className="text-[10px] text-slate-400 font-sans mt-0.5">
+                    Konteks visual kontur, vegetasi, & elevasi saat survei logam
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsLayerMenuOpen(false)}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+                title="Tutup Menu Lapisan"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Base Layer Selection */}
+            <div className="space-y-2">
+              <div className="text-[10px] font-mono text-slate-400 uppercase tracking-wider font-bold">
+                Pilih Tampilan Dasar Lapangan (Map, Satellite, Terrain):
+              </div>
+
+              {/* 1. Map (Peta Standar / Vektor Jalan) */}
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveLayer('map');
+                }}
+                className={`w-full text-left p-3 rounded-2xl border transition-all flex items-start gap-3 ${
+                  activeLayer === 'map'
+                    ? 'bg-gradient-to-r from-cyan-950/80 to-slate-900 border-cyan-400/90 shadow-lg shadow-cyan-950/50 ring-1 ring-cyan-400/40'
+                    : 'bg-slate-900/60 border-slate-800 hover:border-slate-700 hover:bg-slate-900'
+                }`}
+              >
+                <div
+                  className={`p-2.5 rounded-xl shrink-0 mt-0.5 ${
+                    activeLayer === 'map'
+                      ? 'bg-cyan-500 text-slate-950 shadow-md shadow-cyan-500/40'
+                      : 'bg-slate-800 text-cyan-400'
+                  }`}
+                >
+                  <Map className="w-5 h-5" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-xs font-bold font-mono text-white flex items-center gap-1.5">
+                      🗺️ Map (Peta Standar & Vektor)
+                    </span>
+                    {activeLayer === 'map' && (
+                      <span className="text-[9px] px-2 py-0.5 rounded-full bg-cyan-500 text-slate-950 font-mono font-bold flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3" />
+                        Aktif
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-slate-300 mt-1 leading-snug">
+                    Peta jalan vektor jernih dengan nama tempat, jalur transportasi, batas kawasan hijau, dan hidrologi standar.
+                  </p>
+                </div>
+              </button>
+
+              {/* 2. Citra Satelit Udara */}
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveLayer('satellite');
+                }}
+                className={`w-full text-left p-3 rounded-2xl border transition-all flex items-start gap-3 ${
+                  activeLayer === 'satellite'
+                    ? 'bg-gradient-to-r from-sky-950/80 to-slate-900 border-sky-400/90 shadow-lg shadow-sky-950/50 ring-1 ring-sky-400/40'
+                    : 'bg-slate-900/60 border-slate-800 hover:border-slate-700 hover:bg-slate-900'
+                }`}
+              >
+                <div
+                  className={`p-2.5 rounded-xl shrink-0 mt-0.5 ${
+                    activeLayer === 'satellite'
+                      ? 'bg-sky-500 text-slate-950 shadow-md shadow-sky-500/40'
+                      : 'bg-slate-800 text-sky-400'
+                  }`}
+                >
+                  <Globe className="w-5 h-5" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-xs font-bold font-mono text-white flex items-center gap-1.5">
+                      🛰️ Citra Satelit Udara
+                    </span>
+                    {activeLayer === 'satellite' && (
+                      <span className="text-[9px] px-2 py-0.5 rounded-full bg-sky-500 text-slate-950 font-mono font-bold flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3" />
+                        Aktif
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-slate-300 mt-1 leading-snug">
+                    Foto udara resolusi tinggi (Esri World Imagery) memperlihatkan batas vegetasi semak, formasi batuan, tanah terbuka, dan jejak setapak.
+                  </p>
+                </div>
+              </button>
+
+              {/* 2. Topografi Medan (Terrain) */}
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveLayer('terrain');
+                }}
+                className={`w-full text-left p-3 rounded-2xl border transition-all flex items-start gap-3 ${
+                  activeLayer === 'terrain'
+                    ? 'bg-gradient-to-r from-emerald-950/80 to-slate-900 border-emerald-400/90 shadow-lg shadow-emerald-950/50 ring-1 ring-emerald-400/40'
+                    : 'bg-slate-900/60 border-slate-800 hover:border-slate-700 hover:bg-slate-900'
+                }`}
+              >
+                <div
+                  className={`p-2.5 rounded-xl shrink-0 mt-0.5 ${
+                    activeLayer === 'terrain'
+                      ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/40'
+                      : 'bg-slate-800 text-emerald-400'
+                  }`}
+                >
+                  <Mountain className="w-5 h-5" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-xs font-bold font-mono text-white flex items-center gap-1.5">
+                      ⛰️ Topografi Medan (Terrain)
+                    </span>
+                    {activeLayer === 'terrain' && (
+                      <span className="text-[9px] px-2 py-0.5 rounded-full bg-emerald-500 text-slate-950 font-mono font-bold flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3" />
+                        Aktif
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-slate-300 mt-1 leading-snug">
+                    Kontur ketinggian, shading relief bukit & lembah, hidrologi aliran air, dan elevasi medan untuk survei alam bebas.
+                  </p>
+                </div>
+              </button>
+
+              {/* 3. Kontur Ekstrem (OpenTopoMap) */}
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveLayer('opentopo');
+                }}
+                className={`w-full text-left p-3 rounded-2xl border transition-all flex items-start gap-3 ${
+                  activeLayer === 'opentopo'
+                    ? 'bg-gradient-to-r from-amber-950/80 to-slate-900 border-amber-400/90 shadow-lg shadow-amber-950/50 ring-1 ring-amber-400/40'
+                    : 'bg-slate-900/60 border-slate-800 hover:border-slate-700 hover:bg-slate-900'
+                }`}
+              >
+                <div
+                  className={`p-2.5 rounded-xl shrink-0 mt-0.5 ${
+                    activeLayer === 'opentopo'
+                      ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/40'
+                      : 'bg-slate-800 text-amber-400'
+                  }`}
+                >
+                  <Map className="w-5 h-5" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-xs font-bold font-mono text-white flex items-center gap-1.5">
+                      🗺️ Kontur Ekstrem (OpenTopo)
+                    </span>
+                    {activeLayer === 'opentopo' && (
+                      <span className="text-[9px] px-2 py-0.5 rounded-full bg-amber-500 text-slate-950 font-mono font-bold flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3" />
+                        Aktif
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-slate-300 mt-1 leading-snug">
+                    Garis kontur topografi metrik rinci per meter, tebing lereng curam, dan rute jalur pendakian / eksplorasi outdoor.
+                  </p>
+                </div>
+              </button>
+
+              {/* 4. Taktis Gelap (CartoDB Dark) */}
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveLayer('dark');
+                }}
+                className={`w-full text-left p-3 rounded-2xl border transition-all flex items-start gap-3 ${
+                  activeLayer === 'dark'
+                    ? 'bg-gradient-to-r from-slate-900 to-slate-950 border-cyan-400/90 shadow-lg shadow-cyan-950/50 ring-1 ring-cyan-400/40'
+                    : 'bg-slate-900/60 border-slate-800 hover:border-slate-700 hover:bg-slate-900'
+                }`}
+              >
+                <div
+                  className={`p-2.5 rounded-xl shrink-0 mt-0.5 ${
+                    activeLayer === 'dark'
+                      ? 'bg-cyan-500 text-slate-950 shadow-md shadow-cyan-500/40'
+                      : 'bg-slate-800 text-cyan-400'
+                  }`}
+                >
+                  <Moon className="w-5 h-5" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-xs font-bold font-mono text-white flex items-center gap-1.5">
+                      🌑 Taktis Gelap (CartoDB Dark)
+                    </span>
+                    {activeLayer === 'dark' && (
+                      <span className="text-[9px] px-2 py-0.5 rounded-full bg-cyan-500 text-slate-950 font-mono font-bold flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3" />
+                        Aktif
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-slate-300 mt-1 leading-snug">
+                    Latar gelap kontras tinggi untuk visualisasi sensor magnetik dan intensitas kerapatan heatmap tanpa gangguan warna peta.
+                  </p>
+                </div>
+              </button>
+            </div>
+
+            {/* Overlays Section */}
+            <div className="pt-2.5 border-t border-slate-800 space-y-2">
+              <div className="text-[10px] font-mono text-slate-400 uppercase tracking-wider font-bold flex items-center justify-between">
+                <span>Lapisan Tambahan Opsional:</span>
+                <span className="text-cyan-400 text-[9px] lowercase font-normal">dapat ditumpuk</span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                {/* Toggle Labels */}
+                <button
+                  type="button"
+                  onClick={() => setShowLabels(!showLabels)}
+                  className={`flex items-center justify-between p-2.5 rounded-xl border text-xs font-mono transition-all ${
+                    showLabels
+                      ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200 font-bold shadow-sm'
+                      : 'bg-slate-900/80 border-slate-800 text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <Tag className={`w-3.5 h-3.5 ${showLabels ? 'text-cyan-400' : 'text-slate-500'}`} />
+                    <span>Label Jalan</span>
+                  </div>
+                  <span
+                    className={`w-2 h-2 rounded-full ${
+                      showLabels ? 'bg-cyan-400 animate-pulse' : 'bg-slate-700'
+                    }`}
+                  />
+                </button>
+
+                {/* Toggle Hillshade */}
+                <button
+                  type="button"
+                  onClick={() => setShowHillshade(!showHillshade)}
+                  className={`flex items-center justify-between p-2.5 rounded-xl border text-xs font-mono transition-all ${
+                    showHillshade
+                      ? 'bg-emerald-500/20 border-emerald-400 text-emerald-200 font-bold shadow-sm'
+                      : 'bg-slate-900/80 border-slate-800 text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <Mountain className={`w-3.5 h-3.5 ${showHillshade ? 'text-emerald-400' : 'text-slate-500'}`} />
+                    <span>Relief 3D</span>
+                  </div>
+                  <span
+                    className={`w-2 h-2 rounded-full ${
+                      showHillshade ? 'bg-emerald-400 animate-pulse' : 'bg-slate-700'
+                    }`}
+                  />
+                </button>
+              </div>
+            </div>
+
+            {/* Field Advice Note */}
+            <div className="p-2.5 rounded-xl bg-slate-900/90 border border-slate-800 text-[10px] text-slate-400 font-sans leading-relaxed">
+              💡 <strong className="text-slate-200">Tips Survei Lapangan:</strong> Gunakan layer <strong className="text-sky-300">Satelit</strong> untuk mendeteksi batas tutupan pohon dan singkapan batuan terbuka, atau layer <strong className="text-emerald-300">Topografi Medan</strong> untuk membaca lembah cekungan tempat pengendapan logam berat akibat limpasan air hujan.
+            </div>
+          </div>
+        </>
+      )}
+
       {/* Floating Safe Distance Alarm Alert Banner (< 3m) */}
       {activeNearbyFinding && dismissedNearbyFindingId !== activeNearbyFinding.finding.id && (
         <div className="absolute top-16 left-3 right-3 sm:left-auto sm:right-4 sm:max-w-md z-[500] animate-in fade-in slide-in-from-top-4 duration-300 pointer-events-auto">
@@ -1136,6 +1608,7 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
                 <button
                   type="button"
                   onClick={() => {
+                    dismissedNearbyFindingIdRef.current = activeNearbyFinding.finding.id;
                     setDismissedNearbyFindingId(activeNearbyFinding.finding.id);
                     setIsAlarmTestSimulated(false);
                   }}
@@ -1240,6 +1713,43 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
               </button>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Active Map Base Layer Indicator Badge (Bottom-Right) */}
+      {!selectedFinding && (
+        <div className="absolute bottom-3 right-3 z-[400] pointer-events-auto">
+          <button
+            type="button"
+            onClick={() => setIsLayerMenuOpen(true)}
+            className="flex items-center gap-1.5 bg-slate-900/90 backdrop-blur-md px-2.5 py-1.5 rounded-2xl border border-slate-700/80 shadow-xl font-mono text-[10px] text-slate-300 hover:text-white hover:border-slate-600 transition-all active:scale-95 group"
+            title="Klik untuk memilih tampilan visual medan & lapisan satelit/terrain"
+          >
+            {activeLayer === 'map' ? (
+              <Map className="w-3.5 h-3.5 text-cyan-400 group-hover:scale-110 transition-transform" />
+            ) : activeLayer === 'satellite' ? (
+              <Globe className="w-3.5 h-3.5 text-sky-400 group-hover:scale-110 transition-transform" />
+            ) : activeLayer === 'terrain' ? (
+              <Mountain className="w-3.5 h-3.5 text-emerald-400 group-hover:scale-110 transition-transform" />
+            ) : activeLayer === 'opentopo' ? (
+              <Map className="w-3.5 h-3.5 text-amber-400 group-hover:scale-110 transition-transform" />
+            ) : (
+              <Moon className="w-3.5 h-3.5 text-slate-400 group-hover:scale-110 transition-transform" />
+            )}
+            <span className="font-semibold text-slate-200">
+              {activeLayer === 'map'
+                ? 'Peta Map'
+                : activeLayer === 'satellite'
+                ? 'Satelit Udara'
+                : activeLayer === 'terrain'
+                ? 'Topografi Medan'
+                : activeLayer === 'opentopo'
+                ? 'Kontur Ekstrem'
+                : 'Taktis Gelap'}
+            </span>
+            {showLabels && <span className="text-[9px] px-1 py-0.2 rounded bg-cyan-950/80 text-cyan-300 border border-cyan-800">Label</span>}
+            {showHillshade && <span className="text-[9px] px-1 py-0.2 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-800">3D</span>}
+          </button>
         </div>
       )}
 

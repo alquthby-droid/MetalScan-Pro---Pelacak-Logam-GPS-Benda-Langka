@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { MetalFinding, MetalCategory, GPSLocation } from '../types/detector';
 import {
   Download,
@@ -29,6 +29,11 @@ import {
   Compass,
   Mountain,
   TrendingUp,
+  Route,
+  Footprints,
+  LocateFixed,
+  ArrowUpDown,
+  CheckCircle2,
 } from 'lucide-react';
 import { exportFindingsToCSV, exportFindingsToPDF } from '../services/exportService';
 import { geminiService } from '../services/geminiService';
@@ -41,6 +46,7 @@ import {
   calculateDistanceMeters,
   calculateBearingDegrees,
   getCardinalDirectionIndo,
+  getSteeringGuidance,
 } from '../data/ntbPriorityFindings';
 import { GpsCompassModal } from './GpsCompassModal';
 import { TrailReportModal } from './TrailReportModal';
@@ -229,6 +235,8 @@ export const FindingsList: React.FC<FindingsListProps> = ({
     return findingCat === filterCat;
   };
 
+  const [sortBy, setSortBy] = useState<'newest' | 'distance' | 'flux' | 'depth'>('newest');
+
   const filteredFindings = findings.filter((f) => {
     const matchesCat =
       selectedCategory === 'favorite'
@@ -243,6 +251,49 @@ export const FindingsList: React.FC<FindingsListProps> = ({
       f.category.toLowerCase().includes(searchQuery.toLowerCase());
     return matchesCat && matchesSearch;
   });
+
+  // Sort findings with real-time target distance support
+  const sortedFindings = useMemo(() => {
+    return [...filteredFindings].sort((a, b) => {
+      if (sortBy === 'distance') {
+        if (userLocation) {
+          const distA = calculateDistanceMeters(userLocation.lat, userLocation.lng, a.lat, a.lng);
+          const distB = calculateDistanceMeters(userLocation.lat, userLocation.lng, b.lat, b.lng);
+          return distA - distB;
+        }
+        return b.timestamp - a.timestamp;
+      }
+      if (sortBy === 'flux') {
+        return b.magneticStrength - a.magneticStrength;
+      }
+      if (sortBy === 'depth') {
+        return a.depthEstimateCm - b.depthEstimateCm;
+      }
+      return b.timestamp - a.timestamp;
+    });
+  }, [filteredFindings, sortBy, userLocation?.lat, userLocation?.lng]);
+
+  // Real-time nearest target calculation based on live user GPS
+  const nearestTarget = useMemo(() => {
+    if (!userLocation || findings.length === 0) return null;
+    let minDistance = Infinity;
+    let closestFinding: MetalFinding | null = null;
+    for (const f of findings) {
+      const d = calculateDistanceMeters(userLocation.lat, userLocation.lng, f.lat, f.lng);
+      if (d < minDistance) {
+        minDistance = d;
+        closestFinding = f;
+      }
+    }
+    if (!closestFinding) return null;
+    const bearing = calculateBearingDegrees(userLocation.lat, userLocation.lng, closestFinding.lat, closestFinding.lng);
+    return {
+      finding: closestFinding,
+      distanceMeters: minDistance,
+      bearingDegrees: bearing,
+      cardinalDirection: getCardinalDirectionIndo(bearing),
+    };
+  }, [findings, userLocation?.lat, userLocation?.lng]);
 
   const filteredNTBFindings = NTB_PRIORITY_FINDINGS.filter((item) => {
     const matchesRegion = selectedNTBRegion === 'all' || item.region === selectedNTBRegion;
@@ -724,11 +775,57 @@ export const FindingsList: React.FC<FindingsListProps> = ({
         />
       )}
 
+      {/* Live GPS & Target Distance Status Bar */}
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 px-3.5 py-2.5 rounded-2xl bg-gradient-to-r from-slate-950 via-slate-900 to-slate-950 border border-slate-800 text-xs font-mono shadow-md">
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-1.5 text-slate-200">
+            <LocateFixed className={`w-3.5 h-3.5 ${userLocation ? 'text-emerald-400 animate-pulse' : 'text-amber-400'}`} />
+            <span className="font-bold">GPS Lapangan:</span>
+          </div>
+          {userLocation ? (
+            <div className="flex items-center gap-2 text-[11px] text-slate-300 flex-wrap">
+              <span className="flex items-center gap-1 text-emerald-400 font-semibold bg-emerald-500/10 px-2 py-0.5 rounded-lg border border-emerald-500/30">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
+                Real-Time Aktif
+              </span>
+              <span className="text-slate-400">
+                {userLocation.lat.toFixed(5)}, {userLocation.lng.toFixed(5)}
+              </span>
+              <span className="text-slate-500">(±{Math.round(userLocation.accuracy)}m)</span>
+            </div>
+          ) : (
+            <div className="text-[11px] text-amber-300 flex items-center gap-1.5">
+              <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-400" />
+              <span>Mencari sinyal GPS untuk menghitung jarak tempuh target...</span>
+            </div>
+          )}
+        </div>
+
+        {nearestTarget && (
+          <button
+            type="button"
+            onClick={() => handleOpenCompassForFinding(nearestTarget.finding)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-emerald-950/60 to-slate-900 hover:from-emerald-900/60 hover:to-slate-800 border border-emerald-500/40 text-emerald-300 text-[11px] font-semibold transition-all active:scale-95 group shrink-0 shadow-sm"
+            title="Buka Kompas Navigasi ke target terdekat ini"
+          >
+            <Target className="w-3.5 h-3.5 text-emerald-400 group-hover:scale-110 transition-transform" />
+            <span>Target Terdekat:</span>
+            <span className="text-white truncate max-w-[130px] font-bold">{nearestTarget.finding.name}</span>
+            <span className="text-emerald-400 font-mono font-bold">
+              ~{nearestTarget.distanceMeters < 1000
+                ? `${nearestTarget.distanceMeters.toFixed(1)} m`
+                : `${(nearestTarget.distanceMeters / 1000).toFixed(2)} km`}
+            </span>
+            <span className="text-emerald-400 text-xs">→</span>
+          </button>
+        )}
+      </div>
+
       {/* Filter and Search Bar with Dropdown Filter */}
       <div className="flex flex-col gap-2.5 bg-slate-950/80 p-3 rounded-2xl border border-slate-800">
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
           {/* Dropdown Filter for Metal Category */}
-          <div className="relative min-w-[210px] sm:w-auto">
+          <div className="relative min-w-[170px] sm:w-auto">
             <div className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none text-cyan-400 flex items-center">
               <Filter className="w-3.5 h-3.5" />
             </div>
@@ -748,6 +845,28 @@ export const FindingsList: React.FC<FindingsListProps> = ({
               <option value="silver">&nbsp;&nbsp;↳ Perak ({silverCount})</option>
               <option value="iron">&nbsp;&nbsp;↳ Besi / Ferrous ({ironCount})</option>
               <option value="unknown">&nbsp;&nbsp;↳ Mineral Lainnya ({unknownCount})</option>
+            </select>
+            <div className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
+              <ChevronDown className="w-3.5 h-3.5" />
+            </div>
+          </div>
+
+          {/* Sort By Dropdown including Jarak Tempuh Terdekat */}
+          <div className="relative min-w-[200px] sm:w-auto">
+            <div className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none text-emerald-400 flex items-center">
+              <ArrowUpDown className="w-3.5 h-3.5" />
+            </div>
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as any)}
+              className="w-full sm:w-auto pl-8 pr-8 py-2 bg-slate-900 border border-slate-700 hover:border-emerald-500/70 focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400/30 rounded-xl text-xs font-mono text-slate-100 outline-none transition-all cursor-pointer shadow-sm appearance-none font-medium"
+              title="Urutkan temuan berdasarkan jarak tempuh atau kriteria lainnya"
+              aria-label="Urutkan temuan"
+            >
+              <option value="newest">🕒 Urutkan: Terbaru</option>
+              <option value="distance">🎯 Jarak Tempuh Terdekat (GPS)</option>
+              <option value="flux">⚡ Kekuatan Magnetik (µT)</option>
+              <option value="depth">⛏️ Kedalaman Dangkal</option>
             </select>
             <div className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
               <ChevronDown className="w-3.5 h-3.5" />
@@ -828,12 +947,15 @@ export const FindingsList: React.FC<FindingsListProps> = ({
             <div className="flex items-center gap-1.5 flex-wrap">
               <Filter className="w-3 h-3 text-cyan-400" />
               <span>
-                Menampilkan <strong>{filteredFindings.length}</strong> dari {totalCount} temuan
+                Menampilkan <strong>{sortedFindings.length}</strong> dari {totalCount} temuan
                 {selectedCategory !== 'all' && (
                   <span>
                     {' '}• Kategori:{' '}
                     <strong className="text-white">{getCategoryLabel(selectedCategory)}</strong>
                   </span>
+                )}
+                {sortBy === 'distance' && (
+                  <span> • <strong className="text-emerald-400">Diurutkan Jarak Terdekat</strong></span>
                 )}
                 {searchQuery.trim() !== '' && (
                   <span> • Cari: "<strong>{searchQuery}</strong>"</span>
@@ -865,7 +987,7 @@ export const FindingsList: React.FC<FindingsListProps> = ({
               Saat fitur <strong>Auto-Simpan GPS</strong> aktif, aplikasi akan otomatis mencatat koordinat saat Anda mendekati benda logam di atas ambang batas.
             </p>
           </div>
-        ) : filteredFindings.length === 0 ? (
+        ) : sortedFindings.length === 0 ? (
           <div className="text-center py-8 px-4 bg-slate-950/40 rounded-2xl border border-slate-800/60">
             <Filter className="w-7 h-7 text-slate-500 mx-auto mb-2 opacity-60" />
             <p className="text-xs font-semibold text-slate-300">
@@ -886,7 +1008,7 @@ export const FindingsList: React.FC<FindingsListProps> = ({
             </button>
           </div>
         ) : (
-          filteredFindings.map((finding) => {
+          sortedFindings.map((finding) => {
             const theme = getCategoryTheme(finding.category);
             return (
               <div
@@ -1156,6 +1278,196 @@ export const FindingsList: React.FC<FindingsListProps> = ({
                     </div>
                   </div>
                 </div>
+
+                {/* FITUR: JARAK TEMPUH TARGET (REAL-TIME GPS) */}
+                {(() => {
+                  if (!userLocation) {
+                    return (
+                      <div className="flex items-center justify-between p-2.5 rounded-xl bg-slate-900/70 border border-slate-800 text-xs font-mono">
+                        <div className="flex items-center gap-2 text-slate-400">
+                          <Route className="w-4 h-4 text-cyan-400 animate-pulse" />
+                          <span className="font-bold text-slate-300">Jarak Tempuh Target:</span>
+                          <span className="text-amber-400/90 text-[11px] italic">
+                            Menunggu Posisi GPS Pengguna...
+                          </span>
+                        </div>
+                        <div className="text-[10px] text-slate-500">
+                          GPS: {finding.lat.toFixed(5)}, {finding.lng.toFixed(5)}
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  const distanceM = calculateDistanceMeters(
+                    userLocation.lat,
+                    userLocation.lng,
+                    finding.lat,
+                    finding.lng
+                  );
+                  const bearingDeg = calculateBearingDegrees(
+                    userLocation.lat,
+                    userLocation.lng,
+                    finding.lat,
+                    finding.lng
+                  );
+                  const cardinal = getCardinalDirectionIndo(bearingDeg);
+                  const userHeading = userLocation.heading || 0;
+                  const needleAngle = (bearingDeg - userHeading + 360) % 360;
+                  const guidance = getSteeringGuidance(userHeading, bearingDeg);
+
+                  // Walking time at ~1.2 m/s average field search pace
+                  const walkSeconds = Math.round(distanceM / 1.2);
+                  const formattedWalkTime =
+                    distanceM <= 5
+                      ? 'Tepat di lokasi temuan'
+                      : walkSeconds < 60
+                      ? `~${walkSeconds} detik jalan`
+                      : `~${Math.ceil(walkSeconds / 60)} menit jalan`;
+
+                  const formattedDistance =
+                    distanceM < 1000
+                      ? `${distanceM.toFixed(1)} m`
+                      : `${Math.round(distanceM).toLocaleString()} m (${(distanceM / 1000).toFixed(2)} km)`;
+
+                  const isVeryClose = distanceM <= 5;
+                  const isClose = distanceM <= 20;
+                  const isAlarmOnline = alarmState.isActive && alarmState.targetId === finding.id;
+
+                  return (
+                    <div
+                      className={`flex flex-col gap-2.5 p-3 rounded-2xl border transition-all ${
+                        isVeryClose
+                          ? 'bg-gradient-to-r from-emerald-950/60 via-slate-900 to-emerald-950/40 border-emerald-500/60 shadow-lg shadow-emerald-950/40'
+                          : isClose
+                          ? 'bg-gradient-to-r from-cyan-950/50 via-slate-900 to-slate-900 border-cyan-500/50 shadow-md'
+                          : 'bg-gradient-to-r from-slate-900/90 via-slate-900 to-slate-950 border-slate-800'
+                      }`}
+                    >
+                      {/* Top label & proximity tag */}
+                      <div className="flex items-center justify-between gap-2 flex-wrap text-xs font-mono">
+                        <div className="flex items-center gap-1.5 font-bold text-slate-200">
+                          <Route className="w-4 h-4 text-emerald-400" />
+                          <span>Jarak Tempuh Target</span>
+                          <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-1">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping inline-block" />
+                            GPS Real-Time
+                          </span>
+                        </div>
+
+                        {/* Proximity Category Badge */}
+                        {isVeryClose ? (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/25 text-emerald-300 border border-emerald-400 animate-pulse flex items-center gap-1">
+                            🎯 Sasaran Dalam Radius Penggalian (&lt;5m)
+                          </span>
+                        ) : isClose ? (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">
+                            🚶 Sangat Dekat (~{Math.round(distanceM)}m)
+                          </span>
+                        ) : distanceM <= 100 ? (
+                          <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                            📍 Radius Dekat (~{Math.round(distanceM)}m)
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700">
+                            🗺️ Jarak Tempuh Lapangan
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Main Distance Readout, Direction Needle & Walking Estimation */}
+                      <div className="flex items-center justify-between gap-3 flex-wrap bg-slate-950/70 p-2.5 rounded-xl border border-slate-800/80">
+                        {/* Big numeric meters readout */}
+                        <div className="flex items-center gap-3">
+                          {/* Mini compass bearing needle */}
+                          <div
+                            className="relative w-10 h-10 rounded-xl bg-slate-900 border border-emerald-500/40 flex items-center justify-center shrink-0 shadow-inner group cursor-pointer hover:border-emerald-400"
+                            onClick={() => handleOpenCompassForFinding(finding)}
+                            title="Klik untuk membuka kompas navigasi target"
+                          >
+                            <div
+                              className="w-full h-full flex items-center justify-center transition-transform duration-300"
+                              style={{ transform: `rotate(${needleAngle}deg)` }}
+                            >
+                              <Navigation2
+                                className={`w-5 h-5 ${
+                                  isVeryClose ? 'text-emerald-400 fill-emerald-400' : 'text-cyan-400 fill-cyan-400'
+                                }`}
+                              />
+                            </div>
+                            <span className="absolute -bottom-1 text-[7px] font-mono font-bold text-slate-300 bg-slate-950 px-1 rounded border border-slate-800">
+                              {bearingDeg}°
+                            </span>
+                          </div>
+
+                          <div>
+                            <div className="text-[10px] font-mono text-slate-400 uppercase flex items-center gap-1">
+                              <span>Sisa Jarak ke Titik Temuan:</span>
+                            </div>
+                            <div className="text-base sm:text-lg font-black font-mono text-emerald-400 flex items-center gap-2">
+                              <span>{formattedDistance}</span>
+                              <span className="text-slate-500 text-xs font-normal">•</span>
+                              <span className="text-amber-300 text-xs font-semibold">
+                                {bearingDeg}° {cardinal}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Walking time & steering */}
+                        <div className="flex flex-col items-end gap-1 text-[11px] font-mono text-right">
+                          <div className="flex items-center gap-1 text-slate-300">
+                            <Footprints className="w-3.5 h-3.5 text-cyan-400" />
+                            <span>{formattedWalkTime}</span>
+                          </div>
+                          <div
+                            className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                              guidance.isAligned
+                                ? 'bg-emerald-500/20 text-emerald-300'
+                                : 'bg-slate-900 text-slate-400 border border-slate-800'
+                            }`}
+                          >
+                            {guidance.advice}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Tactical Action buttons specifically for Target Distance */}
+                      <div className="flex items-center justify-between gap-2 pt-1 border-t border-slate-850 flex-wrap text-xs font-mono">
+                        <div className="text-[10px] text-slate-500">
+                          Posisi GPS: {finding.lat.toFixed(5)}, {finding.lng.toFixed(5)}
+                        </div>
+
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          {/* Compass Navigation button */}
+                          <button
+                            type="button"
+                            onClick={() => handleOpenCompassForFinding(finding)}
+                            className="flex items-center gap-1 px-2.5 py-1 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/40 text-[11px] font-medium transition-all active:scale-95"
+                            title="Pandu langkah saya menuju target menggunakan kompas GPS"
+                          >
+                            <Compass className="w-3.5 h-3.5 text-amber-400" />
+                            <span>Pandu Kompas</span>
+                          </button>
+
+                          {/* Alarm Online/Offline */}
+                          <button
+                            type="button"
+                            onClick={() => handleToggleAlarm(finding)}
+                            className={`flex items-center gap-1 px-2.5 py-1 rounded-xl border text-[11px] font-medium transition-all active:scale-95 ${
+                              isAlarmOnline
+                                ? 'bg-rose-500/25 text-rose-300 border-rose-500/80 animate-pulse'
+                                : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border-slate-700/80'
+                            }`}
+                            title="Aktifkan alarm suara titik pusat yang berbunyi semakin cepat saat mendekati sasaran"
+                          >
+                            <Radio className={`w-3.5 h-3.5 ${isAlarmOnline ? 'text-rose-400 animate-spin' : 'text-slate-400'}`} />
+                            <span>{isAlarmOnline ? 'Alarm ONLINE' : 'Alarm Titik'}</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
 
               {/* Coordinates line */}
               <div className="text-[10px] font-mono text-slate-500 bg-slate-900/50 px-2.5 py-1.5 rounded-xl border border-slate-800/80 flex items-center justify-between">
@@ -1608,11 +1920,11 @@ export const FindingsList: React.FC<FindingsListProps> = ({
 
                         <div>
                           <div className="text-[10px] font-mono text-slate-400 uppercase tracking-wider flex items-center gap-1">
-                            <Compass className="w-3 h-3 text-amber-400" />
-                            <span>Navigasi Kompas GPS Lapangan:</span>
+                            <Route className="w-3 h-3 text-amber-400" />
+                            <span>Jarak Tempuh Target:</span>
                           </div>
                           <div className="text-sm font-bold font-mono text-white flex items-center gap-2 mt-0.5">
-                            <span className="text-emerald-400">{formattedDistance}</span>
+                            <span className="text-emerald-400 text-base font-bold">{formattedDistance}</span>
                             <span className="text-slate-500">•</span>
                             <span className="text-amber-300">{bearingDeg}° {cardinal}</span>
                           </div>

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useMemo } from 'react';
 import * as d3 from 'd3';
 import { MetalFinding, MetalCategory } from '../types/detector';
 import { BarChart3, TrendingUp, Sparkles, Layers, Zap } from 'lucide-react';
@@ -89,32 +89,35 @@ export const FindingsDistributionChart: React.FC<FindingsDistributionChartProps>
   const [metric, setMetric] = useState<'count' | 'avgFlux'>('count');
   const [hoveredCategory, setHoveredCategory] = useState<CategoryStats | null>(null);
 
-  // Compute category stats
   const totalFindings = findings.length;
-  const categories: MetalCategory[] = ['gold', 'meteorite', 'silver', 'bronze', 'iron'];
 
-  const statsData: CategoryStats[] = categories.map((cat) => {
-    const matched = findings.filter((f) => f.category === cat);
-    const count = matched.length;
-    const percentage = totalFindings > 0 ? (count / totalFindings) * 100 : 0;
-    const avgFlux =
-      count > 0 ? matched.reduce((sum, item) => sum + item.magneticStrength, 0) / count : 0;
-    const maxFlux = count > 0 ? Math.max(...matched.map((m) => m.magneticStrength)) : 0;
+  // Compute category stats
+  const statsData: CategoryStats[] = useMemo(() => {
+    const categories: MetalCategory[] = ['gold', 'meteorite', 'silver', 'bronze', 'iron'];
 
-    return {
-      category: cat,
-      name: CATEGORY_META[cat].name,
-      shortName: CATEGORY_META[cat].shortName,
-      count,
-      percentage: Number(percentage.toFixed(1)),
-      avgFlux: Number(avgFlux.toFixed(1)),
-      maxFlux: Number(maxFlux.toFixed(1)),
-      color: CATEGORY_META[cat].color,
-      gradientStart: CATEGORY_META[cat].gradientStart,
-      gradientEnd: CATEGORY_META[cat].gradientEnd,
-      symbol: CATEGORY_META[cat].symbol,
-    };
-  });
+    return categories.map((cat) => {
+      const matched = findings.filter((f) => f.category === cat);
+      const count = matched.length;
+      const percentage = totalFindings > 0 ? (count / totalFindings) * 100 : 0;
+      const avgFlux =
+        count > 0 ? matched.reduce((sum, item) => sum + item.magneticStrength, 0) / count : 0;
+      const maxFlux = count > 0 ? Math.max(...matched.map((m) => m.magneticStrength)) : 0;
+
+      return {
+        category: cat,
+        name: CATEGORY_META[cat].name,
+        shortName: CATEGORY_META[cat].shortName,
+        count,
+        percentage: Number(percentage.toFixed(1)),
+        avgFlux: Number(avgFlux.toFixed(1)),
+        maxFlux: Number(maxFlux.toFixed(1)),
+        color: CATEGORY_META[cat].color,
+        gradientStart: CATEGORY_META[cat].gradientStart,
+        gradientEnd: CATEGORY_META[cat].gradientEnd,
+        symbol: CATEGORY_META[cat].symbol,
+      };
+    });
+  }, [findings]);
 
   // D3 Rendering with smooth animations
   useEffect(() => {
