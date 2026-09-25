@@ -63,6 +63,7 @@ interface FindingsListProps {
   onOpenCompassModal?: (finding?: NTBPriorityFinding) => void;
   onTogglePriority?: (id: string) => void;
   onToggleFavorite?: (id: string) => void;
+  onOpenSoilProfiler?: () => void;
 }
 
 export const FindingsList: React.FC<FindingsListProps> = ({
@@ -83,6 +84,7 @@ export const FindingsList: React.FC<FindingsListProps> = ({
   onOpenCompassModal,
   onTogglePriority,
   onToggleFavorite,
+  onOpenSoilProfiler,
 }) => {
   const [internalCategory, setInternalCategory] = useState<string>('all');
   const selectedCategory = controlledCategory !== undefined ? controlledCategory : internalCategory;
@@ -507,6 +509,19 @@ export const FindingsList: React.FC<FindingsListProps> = ({
               <TrendingUp className="w-3.5 h-3.5 text-cyan-400" />
               <span>Laporan Jejak</span>
             </button>
+
+            {/* Soil Mineralization Profiler Button */}
+            {onOpenSoilProfiler && (
+              <button
+                type="button"
+                onClick={onOpenSoilProfiler}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-600/25 hover:bg-amber-600/35 text-amber-300 border border-amber-500/40 text-xs font-mono font-medium transition-all shadow-sm active:scale-95"
+                title="Buka Soil Mineralization Profiler: Skor mineral tanah 60 detik & kelayakan deteksi dangkal"
+              >
+                <Mountain className="w-3.5 h-3.5 text-amber-400" />
+                <span>Profil Mineral Tanah</span>
+              </button>
+            )}
 
             {/* Gemini Hotspots Suggestion Button */}
             {onOpenHotspotsModal && (

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Sliders, Sparkles, AlertCircle, PlayCircle, RefreshCw, Flashlight, Activity, Play, Pause } from 'lucide-react';
+import { Sliders, Sparkles, AlertCircle, PlayCircle, RefreshCw, Flashlight, Activity, Play, Pause, Mountain } from 'lucide-react';
 import { sensorManager } from '../services/sensorManager';
 
 interface SimulationControlsProps {
@@ -7,6 +7,7 @@ interface SimulationControlsProps {
   onToggleSim: (sim: boolean) => void;
   onTareZero: () => void;
   sensorType: 'hardware' | 'orientation_fallback' | 'simulation';
+  onOpenSoilProfiler?: () => void;
 }
 
 export const SimulationControls: React.FC<SimulationControlsProps> = ({
@@ -14,6 +15,7 @@ export const SimulationControls: React.FC<SimulationControlsProps> = ({
   onToggleSim,
   onTareZero,
   sensorType,
+  onOpenSoilProfiler,
 }) => {
   const [testSlider, setTestSlider] = useState<number>(0);
   const [isExpanded, setIsExpanded] = useState<boolean>(false);
@@ -66,6 +68,19 @@ export const SimulationControls: React.FC<SimulationControlsProps> = ({
         </div>
 
         <div className="flex items-center gap-2">
+          {onOpenSoilProfiler && (
+            <button
+              type="button"
+              onClick={onOpenSoilProfiler}
+              className="text-xs font-mono flex items-center gap-1.5 px-2.5 py-1 rounded-lg border bg-slate-800 text-amber-300 hover:text-white border-amber-500/40 hover:border-amber-400 transition-all active:scale-95"
+              title="Buka Soil Mineralization Profiler 60 Detik"
+            >
+              <Mountain className="w-3.5 h-3.5 text-amber-400" />
+              <span className="hidden sm:inline">Profil Tanah</span>
+              <span className="sm:hidden">Tanah</span>
+            </button>
+          )}
+
           <button
             type="button"
             onClick={handleToggleSweep}

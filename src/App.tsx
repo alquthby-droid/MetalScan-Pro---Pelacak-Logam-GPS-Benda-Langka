@@ -78,6 +78,7 @@ import { WeatherBadgeHeader } from './components/WeatherBadgeHeader';
 import { WeatherSafetyModal } from './components/WeatherSafetyModal';
 import { ExcavationSafetyBanner } from './components/ExcavationSafetyBanner';
 import { NightModeToggle } from './components/NightModeToggle';
+import { SoilMineralizationModal } from './components/SoilMineralizationModal';
 import { trailService } from './services/trailService';
 import { Cloud, Eye } from 'lucide-react';
 
@@ -234,6 +235,7 @@ export default function App() {
   const [driftState, setDriftState] = useState<DriftMonitorState>(() => driftMonitorService.getState());
   const [isDriftModalOpen, setIsDriftModalOpen] = useState<boolean>(false);
   const [isDriftBannerDismissed, setIsDriftBannerDismissed] = useState<boolean>(false);
+  const [isSoilProfilerOpen, setIsSoilProfilerOpen] = useState<boolean>(false);
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<string>('all');
   const [targetAlarmState, setTargetAlarmState] = useState<TargetCenterAlarmState>(() =>
     targetCenterAlarmService.getState()
@@ -708,6 +710,31 @@ export default function App() {
     setRecentNotification({
       title: 'Tara Nol Berhasil!',
       message: `Nilai dasar bumi dikalibrasi ke ${newBase.toFixed(1)} µT. Anomali logam sekarang terisolasi bersih.`,
+      category: 'calibrated',
+      time: Date.now(),
+    });
+    setTimeout(() => setRecentNotification(null), 4000);
+  };
+
+  // Soil Mineralization Tactical Settings Application
+  const handleApplySoilSettings = (reductionPercent: number, gbOffset: number) => {
+    setSettings((prev) => {
+      let newSens = prev.sensitivity;
+      if (reductionPercent >= 35) {
+        newSens = Math.max(1, Math.min(prev.sensitivity, 2));
+      } else if (reductionPercent >= 15) {
+        newSens = Math.max(2, Math.min(prev.sensitivity, 3));
+      }
+      const newThreshold = Math.max(60, prev.autoSaveThreshold + gbOffset * 1.5);
+      return {
+        ...prev,
+        sensitivity: newSens,
+        autoSaveThreshold: Number(newThreshold.toFixed(1)),
+      };
+    });
+    setRecentNotification({
+      title: 'Setelan Tanah Diterapkan!',
+      message: `Sensitivitas & ambang batas telah disesuaikan berdasarkan profil kepadatan mineral tanah.`,
       category: 'calibrated',
       time: Date.now(),
     });
@@ -1191,6 +1218,7 @@ export default function App() {
               isProximityPulsing={isStrobing}
               driftState={driftState}
               onOpenDriftMonitor={() => setIsDriftModalOpen(true)}
+              onOpenSoilProfiler={() => setIsSoilProfilerOpen(true)}
             />
 
             {/* Real-time Oscilloscope Waveform Canvas */}
@@ -1214,6 +1242,7 @@ export default function App() {
               onToggleSim={(sim) => sensorManager.setSimulationMode(sim)}
               onTareZero={handleTareZero}
               sensorType={sensorStatus.type}
+              onOpenSoilProfiler={() => setIsSoilProfilerOpen(true)}
             />
           </div>
         )}
@@ -1351,6 +1380,7 @@ export default function App() {
               onOpenExportModal={() => setIsExportModalOpen(true)}
               onOpenAnalysisModal={(finding) => setAnalyzingFinding(finding)}
               onOpenHotspotsModal={() => setIsHotspotsModalOpen(true)}
+              onOpenSoilProfiler={() => setIsSoilProfilerOpen(true)}
               selectedCategory={selectedCategoryFilter}
               onCategoryChange={setSelectedCategoryFilter}
               onAddFinding={handleAddFinding}
@@ -1484,6 +1514,15 @@ export default function App() {
         onTareZero={handleTareZero}
         settings={settings}
         onUpdateSettings={(newSettings) => setSettings((prev) => ({ ...prev, ...newSettings }))}
+      />
+
+      {/* Soil Mineralization Profiler 60-Second System Modal */}
+      <SoilMineralizationModal
+        isOpen={isSoilProfilerOpen}
+        onClose={() => setIsSoilProfilerOpen(false)}
+        userLat={userLocation?.lat}
+        userLng={userLocation?.lng}
+        onApplySettings={handleApplySoilSettings}
       />
     </div>
   );

@@ -186,6 +186,46 @@ class DetectorAudioService {
     }
   }
 
+  /**
+   * Joyful, bright triple-bell chime for favorite finding proximity alarm (< 3m)
+   */
+  public playFavoriteProximityAlarm(volume: number = 0.8) {
+    this.initContext();
+    if (!this.ctx) return;
+    try {
+      const now = this.ctx.currentTime;
+      // High-precision melodic bell arpeggio: C6 -> E6 -> G6 -> C7
+      const notes = [
+        { freq: 1046.5, start: 0, duration: 0.12 },
+        { freq: 1318.5, start: 0.08, duration: 0.14 },
+        { freq: 1568.0, start: 0.16, duration: 0.18 },
+        { freq: 2093.0, start: 0.25, duration: 0.45 },
+      ];
+
+      notes.forEach(({ freq, start, duration }) => {
+        if (!this.ctx) return;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(freq, now + start);
+
+        const peakGain = Math.min(0.9, volume * 0.7);
+        gain.gain.setValueAtTime(0.001, now + start);
+        gain.gain.linearRampToValueAtTime(peakGain, now + start + 0.015);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + start + duration);
+
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+
+        osc.start(now + start);
+        osc.stop(now + start + duration);
+      });
+    } catch {
+      // ignore
+    }
+  }
+
   public stopContinuousTone() {
     if (this.oscillator) {
       try {

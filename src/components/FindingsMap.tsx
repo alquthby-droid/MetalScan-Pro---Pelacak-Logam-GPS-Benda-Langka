@@ -25,7 +25,16 @@ import {
   Shovel,
   CheckCircle2,
   Radar,
+  Bell,
+  BellRing,
+  Heart,
+  Volume2,
+  VolumeX,
+  Vibrate,
+  ShieldAlert,
+  X,
 } from 'lucide-react';
+import { audioService } from '../services/audioSynthesizer';
 import { SoilDepthIndicator } from './SoilDepthIndicator';
 import { targetCenterAlarmService, TargetCenterAlarmState } from '../services/targetCenterAlarm';
 import {
@@ -76,6 +85,7 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
   const heatLayerRef = useRef<L.Layer | null>(null);
   const routeLayerRef = useRef<L.LayerGroup | null>(null);
   const radiusRingsLayerRef = useRef<L.LayerGroup | null>(null);
+  const safeDistanceZonesLayerRef = useRef<L.LayerGroup | null>(null);
   const baseLayersRef = useRef<{ [key: string]: L.TileLayer }>({});
 
   const [activeLayer, setActiveLayer] = useState<'dark' | 'satellite'>('dark');
@@ -86,6 +96,18 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
   const [selectedCategory, setSelectedCategory] = useState<MetalCategory | 'all' | 'favorite'>('all');
   const [showFilterBar, setShowFilterBar] = useState<boolean>(true);
   const [selectedFinding, setSelectedFinding] = useState<MetalFinding | null>(null);
+
+  // Safe Distance Alarm States (< 3m radius for Favorite Findings)
+  const [isSafeAlarmEnabled, setIsSafeAlarmEnabled] = useState<boolean>(true);
+  const [isSafeAlarmMuted, setIsSafeAlarmMuted] = useState<boolean>(false);
+  const [activeNearbyFinding, setActiveNearbyFinding] = useState<{
+    finding: MetalFinding;
+    distanceMeters: number;
+    timestamp: number;
+  } | null>(null);
+  const [dismissedNearbyFindingId, setDismissedNearbyFindingId] = useState<string | null>(null);
+  const [isAlarmTestSimulated, setIsAlarmTestSimulated] = useState<boolean>(false);
+  const lastAlarmTriggerTimeRef = useRef<{ [findingId: string]: number }>({});
 
   // Route Planner States
   const [isRoutePlannerActive, setIsRoutePlannerActive] = useState<boolean>(false);
@@ -351,6 +373,174 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
       }
     };
   }, [userLocation, showRadiusRings]);
+
+  // Favorite findings for Safe Distance Alarm
+  const favoriteFindings = useMemo(() => {
+    return findings.filter((f) => f.isFavorite === true);
+  }, [findings]);
+
+  // Safe Distance Proximity Alarm Monitor (< 3m from favorite findings)
+  useEffect(() => {
+    if (!isSafeAlarmEnabled || !userLocation) {
+      if (!isAlarmTestSimulated) {
+        setActiveNearbyFinding(null);
+      }
+      return;
+    }
+
+    if (isAlarmTestSimulated) return;
+
+    if (favoriteFindings.length === 0) {
+      setActiveNearbyFinding(null);
+      return;
+    }
+
+    const userLatLng = L.latLng(userLocation.lat, userLocation.lng);
+    let closestTarget: { finding: MetalFinding; distance: number } | null = null;
+
+    for (const f of favoriteFindings) {
+      const d = userLatLng.distanceTo(L.latLng(f.lat, f.lng));
+      if (d < 3.0) {
+        if (!closestTarget || d < closestTarget.distance) {
+          closestTarget = { finding: f, distance: d };
+        }
+      }
+    }
+
+    if (closestTarget) {
+      const targetId = closestTarget.finding.id;
+      const now = Date.now();
+      const lastTriggered = lastAlarmTriggerTimeRef.current[targetId] || 0;
+
+      setActiveNearbyFinding({
+        finding: closestTarget.finding,
+        distanceMeters: Number(closestTarget.distance.toFixed(1)),
+        timestamp: now,
+      });
+
+      // Fire audio alarm and vibration if not dismissed and debounce passed (> 10s)
+      if (dismissedNearbyFindingId !== targetId && now - lastTriggered > 10000) {
+        lastAlarmTriggerTimeRef.current[targetId] = now;
+
+        if (!isSafeAlarmMuted) {
+          audioService.playFavoriteProximityAlarm(0.85);
+        }
+
+        if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+          try {
+            navigator.vibrate([200, 80, 200, 80, 300]);
+          } catch {
+            // ignore vibration error
+          }
+        }
+      }
+    } else {
+      setActiveNearbyFinding(null);
+      if (dismissedNearbyFindingId) {
+        setDismissedNearbyFindingId(null);
+      }
+    }
+  }, [
+    userLocation,
+    favoriteFindings,
+    isSafeAlarmEnabled,
+    isSafeAlarmMuted,
+    dismissedNearbyFindingId,
+    isAlarmTestSimulated,
+  ]);
+
+  // Draw 3-Meter Safe Distance Zones for Favorite Findings on Map
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    if (safeDistanceZonesLayerRef.current) {
+      map.removeLayer(safeDistanceZonesLayerRef.current);
+      safeDistanceZonesLayerRef.current = null;
+    }
+
+    if (!isSafeAlarmEnabled || favoriteFindings.length === 0) return;
+
+    const layerGroup = L.layerGroup();
+    const deltaLatPerMeter = 1 / 111320;
+
+    favoriteFindings.forEach((fav) => {
+      const isInsideThis = activeNearbyFinding?.finding.id === fav.id;
+      const ringColor = isInsideThis ? '#ef4444' : '#f43f5e';
+
+      // 3m zone circle
+      const zoneCircle = L.circle([fav.lat, fav.lng], {
+        radius: 3,
+        color: ringColor,
+        weight: isInsideThis ? 2.5 : 1.5,
+        dashArray: isInsideThis ? 'none' : '3, 4',
+        fillColor: ringColor,
+        fillOpacity: isInsideThis ? 0.3 : 0.12,
+        interactive: false,
+      });
+      layerGroup.addLayer(zoneCircle);
+
+      // 3m zone badge
+      const badge = L.marker([fav.lat + 3 * deltaLatPerMeter, fav.lng], {
+        icon: L.divIcon({
+          className: 'safe-zone-badge',
+          html: `<div style="transform: translate(-50%, -50%); background: rgba(136, 19, 55, 0.95); color: #fecdd3; border: 1px solid #f43f5e; border-radius: 9999px; padding: 1px 6px; font-size: 8px; font-weight: bold; font-family: monospace; white-space: nowrap; pointer-events: none; box-shadow: 0 1px 5px rgba(0,0,0,0.7); display: flex; align-items: center; gap: 3px;">
+            <span style="color: #fda4af;">❤️</span>
+            <span>3m Aman</span>
+          </div>`,
+          iconSize: [0, 0],
+        }),
+        interactive: false,
+      });
+      layerGroup.addLayer(badge);
+    });
+
+    layerGroup.addTo(map);
+    safeDistanceZonesLayerRef.current = layerGroup;
+
+    return () => {
+      if (safeDistanceZonesLayerRef.current) {
+        map.removeLayer(safeDistanceZonesLayerRef.current);
+        safeDistanceZonesLayerRef.current = null;
+      }
+    };
+  }, [favoriteFindings, isSafeAlarmEnabled, activeNearbyFinding]);
+
+  // Quick test simulation for Safe Distance Alarm (< 3m)
+  const handleTestSafeAlarm = () => {
+    setIsAlarmTestSimulated(true);
+    setDismissedNearbyFindingId(null);
+
+    const candidate = favoriteFindings[0] || findings[0] || {
+      id: 'test_fav_spot',
+      name: 'Koin Emas Sasak (Titik Favorit)',
+      category: 'gold' as MetalCategory,
+      lat: userLocation ? userLocation.lat + 0.000015 : -8.5833,
+      lng: userLocation ? userLocation.lng + 0.000015 : 116.1167,
+      magneticStrength: 82.4,
+      netStrength: 34.4,
+      depthEstimateCm: 14,
+      accuracy: 2.1,
+      timestamp: Date.now(),
+      autoSaved: false,
+      isFavorite: true,
+    };
+
+    setActiveNearbyFinding({
+      finding: candidate,
+      distanceMeters: 1.8,
+      timestamp: Date.now(),
+    });
+
+    if (!isSafeAlarmMuted) {
+      audioService.playFavoriteProximityAlarm(0.9);
+    }
+    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+      try {
+        navigator.vibrate([200, 80, 200, 80, 300]);
+      } catch {}
+    }
+  };
 
   // Filter findings for Route Planner
   const selectedRouteFindings = useMemo(() => {
@@ -708,6 +898,25 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
             )}
           </button>
 
+          {/* Alarm Jarak Aman (< 3m Favorit) Toggle Button */}
+          <button
+            type="button"
+            onClick={() => setIsSafeAlarmEnabled(!isSafeAlarmEnabled)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full backdrop-blur-md border text-xs font-mono shadow-lg active:scale-95 transition-all ${
+              isSafeAlarmEnabled
+                ? 'bg-gradient-to-r from-rose-600/90 to-pink-600/90 border-rose-400 text-white shadow-rose-950/60 font-bold'
+                : 'bg-slate-900/90 border-slate-700/80 text-slate-400 hover:text-slate-200'
+            }`}
+            title="Alarm Jarak Aman: Bergetar dan berbunyi saat mendekati temuan favorit dalam radius < 3m"
+          >
+            <BellRing className={`w-3.5 h-3.5 ${isSafeAlarmEnabled ? 'text-rose-300 animate-pulse' : 'text-slate-400'}`} />
+            <span>Alarm Aman</span>
+            <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-rose-950/90 text-rose-300 font-bold border border-rose-500/40 flex items-center gap-0.5">
+              <span>❤️</span>
+              <span>&lt;3m</span>
+            </span>
+          </button>
+
           {/* Route Planner Toggle Button */}
           {findings.length > 0 && (
             <button
@@ -888,27 +1097,149 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
       {/* Actual Leaflet Map Canvas */}
       <div ref={mapContainerRef} className="w-full h-full z-0" />
 
-      {/* Floating Radius Jarak Legend Chip */}
-      {showRadiusRings && userLocation && !selectedFinding && (
-        <div className="absolute bottom-3 left-3 z-[400] pointer-events-auto flex items-center gap-2 bg-slate-900/90 backdrop-blur-md px-2.5 py-1.5 rounded-2xl border border-slate-700/80 shadow-xl font-mono text-[10px] text-slate-300">
-          <div className="flex items-center gap-1.5 font-bold text-slate-200">
-            <Radar className="w-3.5 h-3.5 text-emerald-400" />
-            <span className="hidden sm:inline">Radius Jarak:</span>
+      {/* Floating Safe Distance Alarm Alert Banner (< 3m) */}
+      {activeNearbyFinding && dismissedNearbyFindingId !== activeNearbyFinding.finding.id && (
+        <div className="absolute top-16 left-3 right-3 sm:left-auto sm:right-4 sm:max-w-md z-[500] animate-in fade-in slide-in-from-top-4 duration-300 pointer-events-auto">
+          <div className="p-3.5 rounded-2xl bg-gradient-to-r from-rose-950/95 via-slate-900/95 to-slate-950/95 backdrop-blur-xl border-2 border-rose-500/80 shadow-2xl shadow-rose-950/80 text-white space-y-2.5 ring-2 ring-rose-500/30">
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex items-center gap-2.5">
+                <div className="relative p-2 rounded-xl bg-rose-500/25 border border-rose-400/50 text-rose-300">
+                  <BellRing className="w-5 h-5 text-rose-400 animate-bounce" />
+                  <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-rose-500 animate-ping"></span>
+                </div>
+                <div>
+                  <div className="flex items-center gap-1.5 font-mono text-[10px] font-bold text-rose-300 uppercase tracking-wider">
+                    <span>🚨 Alarm Jarak Aman (&lt; 3m)</span>
+                    <span className="px-1.5 py-0.2 rounded-full bg-rose-500 text-white font-extrabold text-[9px] animate-pulse">
+                      DEKAT
+                    </span>
+                  </div>
+                  <h4 className="text-sm font-bold text-white tracking-tight line-clamp-1 mt-0.5">
+                    {activeNearbyFinding.finding.name}
+                  </h4>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setIsSafeAlarmMuted(!isSafeAlarmMuted)}
+                  className={`p-1.5 rounded-lg border text-xs transition-colors ${
+                    isSafeAlarmMuted
+                      ? 'bg-slate-800 text-slate-400 border-slate-700'
+                      : 'bg-rose-500/20 text-rose-300 border-rose-500/40 hover:bg-rose-500/30'
+                  }`}
+                  title={isSafeAlarmMuted ? 'Bunyikan Alarm' : 'Bungkam Suara Alarm'}
+                >
+                  {isSafeAlarmMuted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDismissedNearbyFindingId(activeNearbyFinding.finding.id);
+                    setIsAlarmTestSimulated(false);
+                  }}
+                  className="p-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors"
+                  title="Tutup Peringatan Ini"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between text-xs font-mono bg-rose-950/40 p-2 rounded-xl border border-rose-900/60">
+              <div className="flex items-center gap-1.5 text-rose-200">
+                <Crosshair className="w-3.5 h-3.5 text-rose-400 animate-spin" />
+                <span>Jarak ke Titik:</span>
+                <span className="font-extrabold text-sm text-white px-1.5 py-0.5 rounded bg-rose-600/60 border border-rose-400/50">
+                  {activeNearbyFinding.distanceMeters} meter
+                </span>
+              </div>
+
+              <div className="text-[11px] text-slate-300">
+                Radius &lt; 3m terdeteksi!
+              </div>
+            </div>
+
+            <p className="text-[11px] text-slate-300 leading-snug font-sans">
+              Titik koordinat temuan favorit ini berada sangat dekat dengan langkah Anda. Jangan sampai terlewatkan saat menyusuri jalur!
+            </p>
+
+            <div className="flex items-center gap-2 pt-0.5">
+              <button
+                type="button"
+                onClick={() => {
+                  if (mapInstanceRef.current) {
+                    mapInstanceRef.current.flyTo(
+                      [activeNearbyFinding.finding.lat, activeNearbyFinding.finding.lng],
+                      19,
+                      { duration: 1.2 }
+                    );
+                  }
+                }}
+                className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold font-mono text-xs shadow-md transition-all active:scale-95"
+              >
+                <Target className="w-3.5 h-3.5" />
+                <span>Pusatkan Peta</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedFinding(activeNearbyFinding.finding);
+                }}
+                className="flex items-center justify-center gap-1 py-1.5 px-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-mono text-xs border border-slate-700 transition-all active:scale-95"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                <span>Detail</span>
+              </button>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            <span className="flex items-center gap-1" title="Lingkaran 5m: Jangkauan koil pencari & sapuan langsung">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 border border-emerald-300"></span>
-              <span className="text-emerald-300 font-semibold">5m (Koil)</span>
-            </span>
-            <span className="flex items-center gap-1" title="Lingkaran 10m: Jangkauan deteksi anomali menengah">
-              <span className="w-2 h-2 rounded-full bg-cyan-500 border border-cyan-300"></span>
-              <span className="text-cyan-300 font-semibold">10m (Dekat)</span>
-            </span>
-            <span className="flex items-center gap-1" title="Lingkaran 20m: Perimeter luas langkah penjelajahan">
-              <span className="w-2 h-2 rounded-full bg-indigo-500 border border-indigo-300"></span>
-              <span className="text-indigo-300 font-semibold">20m (Luas)</span>
-            </span>
-          </div>
+        </div>
+      )}
+
+      {/* Floating Radius Jarak & Safe Distance Alarm Legend Chip */}
+      {(showRadiusRings || isSafeAlarmEnabled) && userLocation && !selectedFinding && (
+        <div className="absolute bottom-3 left-3 z-[400] pointer-events-auto flex items-center gap-2 bg-slate-900/90 backdrop-blur-md px-2.5 py-1.5 rounded-2xl border border-slate-700/80 shadow-xl font-mono text-[10px] text-slate-300 flex-wrap">
+          {showRadiusRings && (
+            <>
+              <div className="flex items-center gap-1.5 font-bold text-slate-200">
+                <Radar className="w-3.5 h-3.5 text-emerald-400" />
+                <span className="hidden sm:inline">Radius:</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="flex items-center gap-1" title="Lingkaran 5m: Jangkauan koil pencari & sapuan langsung">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 border border-emerald-300"></span>
+                  <span className="text-emerald-300 font-semibold">5m</span>
+                </span>
+                <span className="flex items-center gap-1" title="Lingkaran 10m: Jangkauan deteksi anomali menengah">
+                  <span className="w-2 h-2 rounded-full bg-cyan-500 border border-cyan-300"></span>
+                  <span className="text-cyan-300 font-semibold">10m</span>
+                </span>
+                <span className="flex items-center gap-1" title="Lingkaran 20m: Perimeter luas langkah penjelajahan">
+                  <span className="w-2 h-2 rounded-full bg-indigo-500 border border-indigo-300"></span>
+                  <span className="text-indigo-300 font-semibold">20m</span>
+                </span>
+              </div>
+            </>
+          )}
+
+          {isSafeAlarmEnabled && (
+            <div className={`flex items-center gap-1.5 ${showRadiusRings ? 'pl-2 border-l border-slate-700' : ''}`}>
+              <span className="flex items-center gap-1" title="Lingkaran 3m: Alarm Jarak Aman temuan favorit">
+                <span className="w-2 h-2 rounded-full bg-rose-500 border border-rose-300 animate-pulse"></span>
+                <span className="text-rose-300 font-semibold">3m Aman ❤️</span>
+              </span>
+              <button
+                type="button"
+                onClick={handleTestSafeAlarm}
+                className="px-2 py-0.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 text-[9px] font-bold active:scale-95 transition-all"
+                title="Uji coba alarm jarak aman & notifikasi suara"
+              >
+                Uji Alarm
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -1025,7 +1356,7 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
                 }`}
               >
                 <span>{selectedFinding.isFavorite ? '❤️' : '🤍'}</span>
-                <span>{selectedFinding.isFavorite ? 'Favorit AKTIF' : 'Tandai Favorit'}</span>
+                <span>{selectedFinding.isFavorite ? 'Favorit (Dipantau Alarm <3m)' : 'Tandai Favorit'}</span>
               </button>
             )}
           </div>

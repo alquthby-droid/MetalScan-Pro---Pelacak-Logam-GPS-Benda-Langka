@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Sparkles, Radio, Compass, Disc, Flashlight, Activity, Play, Pause } from 'lucide-react';
+import { Sparkles, Radio, Compass, Disc, Flashlight, Activity, Play, Pause, Mountain } from 'lucide-react';
 import { SensorManager, sensorManager } from '../services/sensorManager';
 import { DriftMonitorState } from '../types/detector';
 
@@ -12,6 +12,7 @@ interface GaugeMeterProps {
   isProximityPulsing?: boolean;
   driftState?: DriftMonitorState;
   onOpenDriftMonitor?: () => void;
+  onOpenSoilProfiler?: () => void;
 }
 
 export const GaugeMeter: React.FC<GaugeMeterProps> = ({
@@ -23,6 +24,7 @@ export const GaugeMeter: React.FC<GaugeMeterProps> = ({
   isProximityPulsing = false,
   driftState,
   onOpenDriftMonitor,
+  onOpenSoilProfiler,
 }) => {
   const [isSweeping, setIsSweeping] = useState<boolean>(() => sensorManager.isAutoSweep());
 
@@ -111,6 +113,18 @@ export const GaugeMeter: React.FC<GaugeMeterProps> = ({
             )}
             <span>{isSweeping ? 'Ayunan Aktif' : 'Uji Ayunan'}</span>
           </button>
+
+          {onOpenSoilProfiler && (
+            <button
+              type="button"
+              onClick={onOpenSoilProfiler}
+              className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-mono font-medium rounded-full bg-slate-800/90 hover:bg-slate-700 text-amber-300 border border-amber-500/30 hover:border-amber-400/60 shadow-sm transition-all active:scale-95"
+              title="Soil Mineralization Profiler: Rekam rata-rata noise magnetik selama 60 detik untuk skor kepadatan mineral tanah"
+            >
+              <Mountain className="w-3.5 h-3.5 text-amber-400" />
+              <span>Profil Tanah (60d)</span>
+            </button>
+          )}
 
           <button
             type="button"

@@ -209,6 +209,53 @@ export interface BatteryState {
   gpsMode: 'high_accuracy' | 'battery_saving' | 'standby';
 }
 
+export type SoilMineralizationLevel = 'VERY_LOW' | 'LOW_MEDIUM' | 'HIGH' | 'SEVERE';
+
+export interface SoilShallowFeasibility {
+  status: 'EXCELLENT' | 'GOOD' | 'CHALLENGING' | 'POOR';
+  title: string;
+  description: string;
+  effectiveShallowDepthCm: number;
+  recommendedSensitivityReductionPercent: number;
+  recommendedGroundBalanceOffset: number;
+  tacticalAdvice: string[];
+}
+
+export interface SoilMineralizationProfile {
+  id: string;
+  timestamp: number;
+  lat?: number;
+  lng?: number;
+  durationSeconds: number;
+  sampleCount: number;
+  meanStrength: number; // in µT
+  noiseSigma: number; // standard deviation of noise in µT
+  peakToPeakVariance: number; // max - min in µT
+  magneticTiltVariation: number; // 3D angle jitter in degrees
+  mineralizationScore: number; // 0 to 100
+  level: SoilMineralizationLevel;
+  soilClassification: string;
+  shallowDetectionFeasibility: SoilShallowFeasibility;
+  notes?: string;
+}
+
+export interface SoilProfilingProgress {
+  isActive: boolean;
+  isPaused: boolean;
+  isCompleted: boolean;
+  elapsedSeconds: number;
+  remainingSeconds: number;
+  totalDurationSeconds: number;
+  progressPercent: number;
+  currentSamplesCount: number;
+  liveMean: number;
+  liveSigma: number;
+  liveMin: number;
+  liveMax: number;
+  currentScorePreview: number;
+  recentNoiseWaveform: number[]; // last ~30 values for visual oscilloscope
+}
+
 export interface GPSLocation {
   lat: number;
   lng: number;
