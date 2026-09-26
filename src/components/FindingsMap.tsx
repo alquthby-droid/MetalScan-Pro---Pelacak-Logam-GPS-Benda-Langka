@@ -39,6 +39,12 @@ import {
   ChevronDown,
   Moon,
   Tag,
+  CircleDot,
+  RotateCcw,
+  Landmark,
+  TrendingDown,
+  AlertTriangle,
+  ChevronRight,
 } from 'lucide-react';
 import { audioService } from '../services/audioSynthesizer';
 import { SoilDepthIndicator } from './SoilDepthIndicator';
@@ -49,6 +55,12 @@ import {
   calculateDistanceMeters,
 } from '../services/routePlannerService';
 import { RoutePlannerModal } from './RoutePlannerModal';
+import { trailService, TrailPoint } from '../services/trailService';
+import { HistoricalMarkerSite } from '../types/historicalSite';
+import { HISTORICAL_MARKERS_DATA } from '../data/historicalSitesData';
+import { Terrain3DAnalysisModal } from './Terrain3DAnalysisModal';
+import { HistoricalMarkersModal } from './HistoricalMarkersModal';
+import { analyzeTerrainArea } from '../services/elevationTerrainService';
 
 interface FindingsMapProps {
   findings: MetalFinding[];
@@ -60,6 +72,7 @@ interface FindingsMapProps {
   onOpenRoutePlanner?: () => void;
   onTogglePriority?: (id: string) => void;
   onToggleFavorite?: (id: string) => void;
+  onQuickPin?: () => void;
 }
 
 const CATEGORY_FILTER_OPTIONS: { id: MetalCategory | 'all' | 'favorite'; label: string; symbol: string; color: string; activeBg: string; activeBorder: string }[] = [
@@ -84,16 +97,24 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
   onOpenRoutePlanner,
   onTogglePriority,
   onToggleFavorite,
+  onQuickPin,
 }) => {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const userMarkerRef = useRef<L.Marker | null>(null);
   const userAccuracyCircleRef = useRef<L.Circle | null>(null);
+  const prevUserLocationRef = useRef<GPSLocation | null>(null);
+  const [isAutoPanActive, setIsAutoPanActive] = useState<boolean>(true);
   const markersLayerRef = useRef<L.LayerGroup | null>(null);
   const heatLayerRef = useRef<L.Layer | null>(null);
+  const archeologicalHotspotsLayerRef = useRef<L.LayerGroup | null>(null);
   const routeLayerRef = useRef<L.LayerGroup | null>(null);
   const radiusRingsLayerRef = useRef<L.LayerGroup | null>(null);
   const safeDistanceZonesLayerRef = useRef<L.LayerGroup | null>(null);
+  const trackLoggerLayerRef = useRef<L.LayerGroup | null>(null);
+  const searchRadiusLayerRef = useRef<L.LayerGroup | null>(null);
+  const historicalMarkersLayerRef = useRef<L.LayerGroup | null>(null);
+  const slopeAnalysisLayerRef = useRef<L.LayerGroup | null>(null);
   const baseLayersRef = useRef<{ [key: string]: L.TileLayer }>({});
 
   const [activeLayer, setActiveLayer] = useState<MapBaseLayerType>('satellite');
@@ -101,12 +122,39 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
   const [showHillshade, setShowHillshade] = useState<boolean>(false);
   const [isLayerMenuOpen, setIsLayerMenuOpen] = useState<boolean>(false);
   const [showHeatmap, setShowHeatmap] = useState<boolean>(true);
+  const [showHotspotBeacons, setShowHotspotBeacons] = useState<boolean>(true);
+  const [showHistoricalMarkers, setShowHistoricalMarkers] = useState<boolean>(true);
+  const [showSlopeAnalysis, setShowSlopeAnalysis] = useState<boolean>(false);
+  const [isTerrain3DModalOpen, setIsTerrain3DModalOpen] = useState<boolean>(false);
+  const [isHistoricalMarkersModalOpen, setIsHistoricalMarkersModalOpen] = useState<boolean>(false);
+  const [terrain3DCenter, setTerrain3DCenter] = useState<{ lat: number; lng: number; title: string }>({
+    lat: -7.5583,
+    lng: 112.3811,
+    title: 'Kawasan Ibukota Majapahit Trowulan',
+  });
+  const [currentSlopeInfo, setCurrentSlopeInfo] = useState<{
+    slope: number;
+    elev: number;
+    dangerLevel: 'SAFE' | 'MODERATE' | 'STEEP' | 'EXTREME';
+  } | null>(null);
+  const [isHeatmapSettingsOpen, setIsHeatmapSettingsOpen] = useState<boolean>(false);
   const [showRadiusRings, setShowRadiusRings] = useState<boolean>(true);
   const [showPins, setShowPins] = useState<boolean>(true);
   const [heatRadius, setHeatRadius] = useState<number>(35);
   const [selectedCategory, setSelectedCategory] = useState<MetalCategory | 'all' | 'favorite'>('all');
   const [showFilterBar, setShowFilterBar] = useState<boolean>(true);
   const [selectedFinding, setSelectedFinding] = useState<MetalFinding | null>(null);
+
+  // Search Radius State (Dynamic coverage area: 10m, 25m, 50m, 100m, 250m)
+  const [searchRadius, setSearchRadius] = useState<'all' | 10 | 25 | 50 | 100 | 250>('all');
+  const [isSearchRadiusMenuOpen, setIsSearchRadiusMenuOpen] = useState<boolean>(false);
+
+  // Track Logger States (GPS movement trail recording)
+  const [showTrackLog, setShowTrackLog] = useState<boolean>(true);
+  const [trailPoints, setTrailPoints] = useState<TrailPoint[]>(() => trailService.getPoints());
+
+  // Marker Animation Preference: 'drop_pulse' (Drop and Pulse), 'pulse', 'drop', or 'none'
+  const [markerAnimation, setMarkerAnimation] = useState<'drop_pulse' | 'pulse' | 'drop' | 'none'>('drop_pulse');
 
   // Safe Distance Alarm States (< 3m radius for Favorite Findings)
   const [isSafeAlarmEnabled, setIsSafeAlarmEnabled] = useState<boolean>(true);
@@ -179,12 +227,145 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
     return counts;
   }, [findings]);
 
-  // Filtered findings based on selected category or favorite
+  // Subscribe to real-time Track Logger GPS trail points
+  useEffect(() => {
+    const unsub = trailService.subscribe((pts) => {
+      setTrailPoints(pts);
+    });
+    return () => unsub();
+  }, []);
+
+  // Real-time counts of findings within each search radius
+  const radiusCounts = useMemo(() => {
+    if (!userLocation) return { 10: 0, 25: 0, 50: 0, 100: 0, 250: 0 };
+    const counts = { 10: 0, 25: 0, 50: 0, 100: 0, 250: 0 };
+    findings.forEach((f) => {
+      const d = calculateDistanceMeters(userLocation.lat, userLocation.lng, f.lat, f.lng);
+      if (d <= 10) counts[10]++;
+      if (d <= 25) counts[25]++;
+      if (d <= 50) counts[50]++;
+      if (d <= 100) counts[100]++;
+      if (d <= 250) counts[250]++;
+    });
+    return counts;
+  }, [findings, userLocation?.lat, userLocation?.lng]);
+
+  // Filtered findings based on selected category or favorite AND searchRadius
   const filteredFindings = useMemo(() => {
-    if (selectedCategory === 'all') return findings;
-    if (selectedCategory === 'favorite') return findings.filter((f) => f.isFavorite === true);
-    return findings.filter((f) => f.category === selectedCategory);
-  }, [findings, selectedCategory]);
+    let list = findings;
+    if (selectedCategory === 'favorite') {
+      list = list.filter((f) => f.isFavorite === true);
+    } else if (selectedCategory !== 'all') {
+      list = list.filter((f) => f.category === selectedCategory);
+    }
+
+    // Dynamic Search Radius filter around user GPS position
+    if (searchRadius !== 'all' && userLocation) {
+      list = list.filter((f) => {
+        const d = calculateDistanceMeters(userLocation.lat, userLocation.lng, f.lat, f.lng);
+        return d <= searchRadius;
+      });
+    }
+
+    return list;
+  }, [findings, selectedCategory, searchRadius, userLocation?.lat, userLocation?.lng]);
+
+  // Archaeological Hotspot Clusters (Area Konsentrasi Temuan Logam Tinggi di Lapangan)
+  const archeologicalHotspots = useMemo(() => {
+    if (filteredFindings.length === 0) return [];
+
+    const clusters: {
+      id: string;
+      lat: number;
+      lng: number;
+      findings: MetalFinding[];
+      count: number;
+      peakFlux: number;
+      avgFlux: number;
+      avgDepthCm: number;
+      dominantCategory: MetalCategory;
+      significance: 'KRITIS_TINGGI' | 'TINGGI' | 'SEDANG';
+      title: string;
+    }[] = [];
+
+    const visitedIds = new Set<string>();
+
+    filteredFindings.forEach((finding) => {
+      if (visitedIds.has(finding.id)) return;
+
+      // Group nearby findings within 35 meters radius
+      const clusterMembers = filteredFindings.filter((other) => {
+        const dist = calculateDistanceMeters(finding.lat, finding.lng, other.lat, other.lng);
+        return dist <= 35;
+      });
+
+      clusterMembers.forEach((m) => visitedIds.add(m.id));
+
+      const count = clusterMembers.length;
+      const peakFinding = clusterMembers.reduce(
+        (max, curr) => (curr.magneticStrength > max.magneticStrength ? curr : max),
+        clusterMembers[0]
+      );
+      const totalFlux = clusterMembers.reduce((acc, curr) => acc + curr.magneticStrength, 0);
+      const avgFlux = Number((totalFlux / count).toFixed(1));
+      const totalDepth = clusterMembers.reduce(
+        (acc, curr) => acc + (curr.depthEstimateCm || 15),
+        0
+      );
+      const avgDepthCm = Math.round(totalDepth / count);
+
+      // Dominant metal category in this cluster
+      const catCount: Record<string, number> = {};
+      clusterMembers.forEach((m) => {
+        catCount[m.category] = (catCount[m.category] || 0) + 1;
+      });
+      let dominantCategory: MetalCategory = finding.category;
+      let maxCatCount = 0;
+      Object.entries(catCount).forEach(([cat, cnt]) => {
+        if (cnt > maxCatCount) {
+          maxCatCount = cnt;
+          dominantCategory = cat as MetalCategory;
+        }
+      });
+
+      const significance =
+        count >= 3 || peakFinding.magneticStrength >= 140
+          ? 'KRITIS_TINGGI'
+          : count >= 2 || peakFinding.magneticStrength >= 105
+          ? 'TINGGI'
+          : 'SEDANG';
+
+      const catLabel =
+        dominantCategory === 'gold'
+          ? 'Emas & Mulia'
+          : dominantCategory === 'meteorite'
+          ? 'Meteorit & Aerolit'
+          : dominantCategory === 'bronze'
+          ? 'Perunggu Kuno'
+          : dominantCategory === 'silver'
+          ? 'Perak Murni'
+          : 'Ferrous Relik';
+
+      // An archeological hotspot is detected when there is a cluster of >= 2 findings OR high magnetic anomaly >= 105 uT
+      if (count >= 2 || peakFinding.magneticStrength >= 105) {
+        clusters.push({
+          id: `hotspot-${finding.id}`,
+          lat: peakFinding.lat,
+          lng: peakFinding.lng,
+          findings: clusterMembers,
+          count,
+          peakFlux: peakFinding.magneticStrength,
+          avgFlux,
+          avgDepthCm,
+          dominantCategory,
+          significance,
+          title: `Hotspot ${catLabel} (${count} Temuan)`,
+        });
+      }
+    });
+
+    return clusters;
+  }, [filteredFindings]);
 
   // Initialize Leaflet map
   useEffect(() => {
@@ -288,6 +469,11 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
     const markersLayer = L.layerGroup().addTo(map);
     markersLayerRef.current = markersLayer;
 
+    // Pause auto-panning when user manually drags/explores the map
+    map.on('dragstart', () => {
+      setIsAutoPanActive(false);
+    });
+
     // Fix leaflet default icon path issues
     delete (L.Icon.Default.prototype as unknown as { _getIconUrl?: unknown })._getIconUrl;
     L.Icon.Default.mergeOptions({
@@ -362,12 +548,35 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
       iconAnchor: [12, 12],
     });
 
+    const prevLocation = prevUserLocationRef.current;
+
     if (!userMarkerRef.current) {
       userMarkerRef.current = L.marker(userLatLng, { icon: userIcon, zIndexOffset: 1000 }).addTo(map);
       map.setView(userLatLng, Math.max(16, map.getZoom()));
     } else {
       userMarkerRef.current.setLatLng(userLatLng);
+
+      // Smooth panning animation when user moves/changes location
+      if (isAutoPanActive && prevLocation) {
+        const distMoved = calculateDistanceMeters(
+          prevLocation.lat,
+          prevLocation.lng,
+          userLocation.lat,
+          userLocation.lng
+        );
+        // If moved at least 0.5m, smoothly pan map to the new position instead of instantly jumping
+        if (distMoved >= 0.5) {
+          map.panTo(userLatLng, {
+            animate: true,
+            duration: 1.5, // 1.5s gentle gliding pan
+            easeLinearity: 0.25,
+            noMoveStart: false,
+          });
+        }
+      }
     }
+
+    prevUserLocationRef.current = userLocation;
 
     // Accuracy circle
     if (userLocation.accuracy && userLocation.accuracy > 0) {
@@ -385,7 +594,7 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
         userAccuracyCircleRef.current.setRadius(userLocation.accuracy);
       }
     }
-  }, [userLocation]);
+  }, [userLocation, isAutoPanActive]);
 
   // Update Distance Radius Rings (5m, 10m, and 20m) around User Location
   useEffect(() => {
@@ -750,6 +959,323 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
     mapInstanceRef.current.fitBounds(poly.getBounds().pad(0.25), { animate: true });
   };
 
+  // Render Track Logger (GPS movement trail polyline) on Map
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    if (trackLoggerLayerRef.current) {
+      map.removeLayer(trackLoggerLayerRef.current);
+      trackLoggerLayerRef.current = null;
+    }
+
+    if (!showTrackLog || trailPoints.length === 0) return;
+
+    const trackGroup = L.layerGroup();
+    const coords: [number, number][] = trailPoints.map((p) => [p.lat, p.lng]);
+
+    if (coords.length > 1) {
+      // Outer ambient glowing polyline
+      const glowTrack = L.polyline(coords, {
+        color: '#10b981',
+        weight: 6,
+        opacity: 0.35,
+        lineCap: 'round',
+        lineJoin: 'round',
+      });
+      glowTrack.addTo(trackGroup);
+
+      // Inner distinct tracking polyline
+      const innerTrack = L.polyline(coords, {
+        color: '#06b6d4',
+        weight: 2.5,
+        dashArray: '5, 5',
+        opacity: 0.95,
+        lineCap: 'round',
+        lineJoin: 'round',
+      });
+      innerTrack.addTo(trackGroup);
+
+      // Start Marker
+      const startPt = trailPoints[0];
+      const startMarker = L.circleMarker([startPt.lat, startPt.lng], {
+        radius: 5,
+        color: '#10b981',
+        fillColor: '#ffffff',
+        fillOpacity: 1,
+        weight: 2,
+      });
+      startMarker.bindTooltip('🚩 Titik Awal Jejak Pencarian', { direction: 'top' });
+      startMarker.addTo(trackGroup);
+
+      // Magnetic anomaly breadcrumb dots along the trail
+      trailPoints.forEach((pt, index) => {
+        if (pt.isAnomaly && index > 0 && index < trailPoints.length - 1) {
+          const anomalyMarker = L.circleMarker([pt.lat, pt.lng], {
+            radius: 4,
+            color: '#f59e0b',
+            fillColor: '#fbbf24',
+            fillOpacity: 0.8,
+            weight: 1.5,
+          });
+          anomalyMarker.bindTooltip(
+            `⚡ Anomali Magnetik: ${pt.magneticStrength} µT (+${pt.netStrength} µT)`,
+            { direction: 'top' }
+          );
+          anomalyMarker.addTo(trackGroup);
+        }
+      });
+    }
+
+    trackGroup.addTo(map);
+    trackLoggerLayerRef.current = trackGroup;
+
+    return () => {
+      if (trackLoggerLayerRef.current) {
+        map.removeLayer(trackLoggerLayerRef.current);
+        trackLoggerLayerRef.current = null;
+      }
+    };
+  }, [showTrackLog, trailPoints]);
+
+  // Render Search Radius Circle on Map
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    if (searchRadiusLayerRef.current) {
+      map.removeLayer(searchRadiusLayerRef.current);
+      searchRadiusLayerRef.current = null;
+    }
+
+    if (searchRadius === 'all' || !userLocation) return;
+
+    const radiusGroup = L.layerGroup();
+
+    // 1. Interactive Pulsing Search Radius Circle
+    const radiusCircle = L.circle([userLocation.lat, userLocation.lng], {
+      radius: searchRadius,
+      color: '#06b6d4',
+      weight: 2,
+      dashArray: '6, 6',
+      fillColor: '#06b6d4',
+      fillOpacity: 0.08,
+      interactive: false,
+    });
+    radiusCircle.addTo(radiusGroup);
+
+    // 2. Search Radius Perimeter Badge Label
+    const deltaLat = searchRadius / 111320;
+    const badgeMarker = L.marker([userLocation.lat + deltaLat, userLocation.lng], {
+      icon: L.divIcon({
+        className: 'search-radius-badge',
+        html: `
+          <div style="transform: translate(-50%, -100%); background: rgba(8, 51, 68, 0.95); color: #67e8f9; border: 1.5px solid #22d3ee; border-radius: 9999px; padding: 2px 8px; font-size: 9px; font-weight: bold; font-family: monospace; white-space: nowrap; box-shadow: 0 2px 10px rgba(0,0,0,0.6); pointer-events: none; display: flex; align-items: center; gap: 4px;">
+            <span style="display: inline-block; width: 6px; height: 6px; border-radius: 9999px; background: #22d3ee;"></span>
+            <span>Jangkauan Radius ${searchRadius}m (${filteredFindings.length} Titik)</span>
+          </div>
+        `,
+        iconSize: [0, 0],
+      }),
+      interactive: false,
+    });
+    badgeMarker.addTo(radiusGroup);
+
+    radiusGroup.addTo(map);
+    searchRadiusLayerRef.current = radiusGroup;
+
+    return () => {
+      if (searchRadiusLayerRef.current) {
+        map.removeLayer(searchRadiusLayerRef.current);
+        searchRadiusLayerRef.current = null;
+      }
+    };
+  }, [searchRadius, userLocation?.lat, userLocation?.lng, filteredFindings.length]);
+
+  // Render Historical Markers on Map
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    if (historicalMarkersLayerRef.current) {
+      map.removeLayer(historicalMarkersLayerRef.current);
+      historicalMarkersLayerRef.current = null;
+    }
+
+    if (!showHistoricalMarkers) return;
+
+    const group = L.layerGroup();
+
+    HISTORICAL_MARKERS_DATA.forEach((site) => {
+      const iconHtml = `
+        <div class="historical-marker-node" style="position: relative; width: 44px; height: 50px; display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: pointer; transition: transform 0.25s;" onmouseover="this.style.transform='scale(1.2) translateY(-4px)'" onmouseout="this.style.transform='scale(1) translateY(0)'">
+          <!-- Pulse Halo -->
+          <div class="hotspot-pulse-ring-elem" style="position: absolute; top: 2px; width: 38px; height: 38px; border-radius: 9999px; border: 2px solid #f59e0b; pointer-events: none; opacity: 0.85;"></div>
+          
+          <!-- Pedestal Monument Icon -->
+          <div style="position: relative; z-index: 3; width: 34px; height: 34px; border-radius: 12px; background: linear-gradient(135deg, #78350f 0%, #d97706 50%, #f59e0b 100%); border: 2px solid #fef08a; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 14px rgba(0,0,0,0.8), 0 0 16px rgba(245, 158, 11, 0.6); color: #fff; font-size: 17px;">
+            🏛️
+          </div>
+
+          <!-- Potential Badge -->
+          <div style="position: absolute; top: -10px; z-index: 5; background: #92400e; color: #fef08a; font-size: 8px; font-weight: 900; font-family: monospace; padding: 1px 5px; border-radius: 9999px; border: 1px solid #fef08a; box-shadow: 0 2px 6px rgba(0,0,0,0.7); white-space: nowrap;">
+            ★ ${site.artifactPotentialScore}% RELIK
+          </div>
+
+          <!-- Stem Arrow -->
+          <div style="position: absolute; bottom: 4px; width: 8px; height: 8px; background: #78350f; transform: rotate(45deg); z-index: 2; border-right: 1.5px solid #fef08a; border-bottom: 1.5px solid #fef08a;"></div>
+        </div>
+      `;
+
+      const customIcon = L.divIcon({
+        className: 'historical-site-marker',
+        html: iconHtml,
+        iconSize: [44, 50],
+        iconAnchor: [22, 46],
+      });
+
+      const marker = L.marker([site.lat, site.lng], { icon: customIcon });
+
+      const popupContent = document.createElement('div');
+      popupContent.style.minWidth = '230px';
+      popupContent.style.maxWidth = '280px';
+      popupContent.style.fontFamily = 'monospace';
+      popupContent.style.color = '#f1f5f9';
+      popupContent.style.fontSize = '11px';
+      popupContent.innerHTML = `
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 5px;">
+          <span style="font-size: 9px; font-weight: bold; background: rgba(245, 158, 11, 0.2); color: #fcd34d; border: 1px solid rgba(245, 158, 11, 0.4); padding: 1px 6px; border-radius: 9999px;">
+            ${site.era}
+          </span>
+          <span style="font-size: 9px; color: #38bdf8; font-weight: bold;">
+            ★ ${site.artifactPotentialScore}% Potensi Relik
+          </span>
+        </div>
+        <h4 style="font-size: 13px; font-weight: bold; color: #fff; margin: 0 0 2px 0;">${site.name}</h4>
+        <div style="font-size: 10px; color: #94a3b8; margin-bottom: 6px;">📍 ${site.region} • ${site.elevationMeters} mdpl (Lereng ~${site.averageSlopeDegrees ?? 5}°)</div>
+        <p style="font-size: 10px; color: #cbd5e1; line-height: 1.35; margin: 0 0 6px 0; font-family: sans-serif;">${site.description}</p>
+        <div style="font-size: 9px; color: #fde68a; margin-bottom: 8px;"><strong>Potensi Artefak:</strong> ${site.knownArtifactTypes.slice(0, 3).join(', ')}</div>
+        <div style="font-size: 8px; color: #64748b; margin-bottom: 8px;">Sumber: ${site.openDatabaseSource} (${site.openDatabaseId})</div>
+        <div style="display: flex; gap: 6px;">
+          <button id="btn-hist-3d-${site.id}" style="flex: 1; padding: 6px 8px; background: #059669; color: #fff; border: none; border-radius: 8px; font-size: 10px; font-weight: bold; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 4px;">
+            ⛰️ Medan 3D
+          </button>
+          <a href="https://www.google.com/maps/dir/?api=1&destination=${site.lat},${site.lng}" target="_blank" rel="noopener noreferrer" style="flex: 1; text-align: center; text-decoration: none; padding: 6px 8px; background: #0284c7; color: #fff; border-radius: 8px; font-size: 10px; font-weight: bold; display: flex; align-items: center; justify-content: center; gap: 4px;">
+            🧭 Rute Arah
+          </a>
+        </div>
+      `;
+
+      marker.bindPopup(popupContent, { maxWidth: 300, className: 'historical-marker-popup' });
+
+      marker.on('popupopen', () => {
+        const btn3D = document.getElementById(`btn-hist-3d-${site.id}`);
+        if (btn3D) {
+          btn3D.onclick = () => {
+            setTerrain3DCenter({
+              lat: site.lat,
+              lng: site.lng,
+              title: site.name,
+            });
+            setIsTerrain3DModalOpen(true);
+          };
+        }
+      });
+
+      marker.addTo(group);
+    });
+
+    group.addTo(map);
+    historicalMarkersLayerRef.current = group;
+
+    return () => {
+      if (historicalMarkersLayerRef.current) {
+        map.removeLayer(historicalMarkersLayerRef.current);
+        historicalMarkersLayerRef.current = null;
+      }
+    };
+  }, [showHistoricalMarkers]);
+
+  // Render Slope Danger Analysis Overlay on Leaflet Map
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    if (slopeAnalysisLayerRef.current) {
+      map.removeLayer(slopeAnalysisLayerRef.current);
+      slopeAnalysisLayerRef.current = null;
+    }
+
+    if (!showSlopeAnalysis) {
+      setCurrentSlopeInfo(null);
+      return;
+    }
+
+    let isMounted = true;
+    const centerLat = userLocation?.lat || map.getCenter().lat;
+    const centerLng = userLocation?.lng || map.getCenter().lng;
+
+    analyzeTerrainArea(centerLat, centerLng, 120, 11).then((res) => {
+      if (!isMounted || !mapInstanceRef.current) return;
+
+      const group = L.layerGroup();
+
+      // Render colored slope circle zones
+      res.points.forEach((pt) => {
+        const color =
+          pt.slopeDegrees < 10
+            ? '#10b981'
+            : pt.slopeDegrees < 20
+            ? '#eab308'
+            : pt.slopeDegrees < 30
+            ? '#f97316'
+            : '#ef4444';
+
+        const circle = L.circle([pt.lat, pt.lng], {
+          radius: 11,
+          color: color,
+          weight: 1.5,
+          fillColor: color,
+          fillOpacity: pt.isDanger ? 0.38 : 0.22,
+        });
+
+        circle.bindTooltip(
+          `⛰️ Elev: ${pt.elevation}m • Kemiringan: ${pt.slopeDegrees}° (${pt.slopeCategory === 'EXTREME_DANGER' ? 'BAHAYA JURANG' : pt.slopeCategory === 'STEEP' ? 'CURAM' : pt.slopeCategory === 'MODERATE' ? 'SEDANG' : 'AMAN'})`,
+          { direction: 'top', className: 'slope-tooltip' }
+        );
+
+        circle.addTo(group);
+      });
+
+      // Update current slope info
+      const dangerLevel =
+        res.maxSlope >= 30
+          ? 'EXTREME'
+          : res.maxSlope >= 20
+          ? 'STEEP'
+          : res.maxSlope >= 10
+          ? 'MODERATE'
+          : 'SAFE';
+
+      setCurrentSlopeInfo({
+        slope: res.centerPointSlope,
+        elev: res.centerElevation,
+        dangerLevel,
+      });
+
+      group.addTo(map);
+      slopeAnalysisLayerRef.current = group;
+    });
+
+    return () => {
+      isMounted = false;
+      if (slopeAnalysisLayerRef.current) {
+        map.removeLayer(slopeAnalysisLayerRef.current);
+        slopeAnalysisLayerRef.current = null;
+      }
+    };
+  }, [showSlopeAnalysis, userLocation?.lat, userLocation?.lng]);
+
   // Render Findings Markers & Heatmap based on filteredFindings & route planner mode
   useEffect(() => {
     const map = mapInstanceRef.current;
@@ -764,8 +1290,14 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
       heatLayerRef.current = null;
     }
 
-    // 1. Generate Heatmap Data from filtered findings
-    // Weight calculation: Normalized by magneticStrength (e.g. 50uT -> 0.3, 100uT -> 0.65, 180uT -> 1.0)
+    // Remove existing archeological hotspots layer if any
+    if (archeologicalHotspotsLayerRef.current) {
+      map.removeLayer(archeologicalHotspotsLayerRef.current);
+      archeologicalHotspotsLayerRef.current = null;
+    }
+
+    // 1. Generate Heatmap Thermal Anomaly Layer from filtered findings
+    // Weight calculation: Normalized by magneticStrength & net anomaly
     if (showHeatmap && filteredFindings.length > 0) {
       const heatPoints: [number, number, number][] = filteredFindings.map((f) => {
         // Higher intensity for stronger magnetic anomaly
@@ -773,24 +1305,125 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
         return [f.lat, f.lng, intensity];
       });
 
-      // Gradient color configuration: Cold (cyan/blue) -> Moderate (lime/yellow) -> Hot intense (orange/red/purple)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const heat = (L as any).heatLayer(heatPoints, {
-        radius: heatRadius,
-        blur: Math.round(heatRadius * 0.7),
-        maxZoom: 18,
-        max: 1.0,
-        gradient: {
-          0.2: '#06b6d4', // Cyan (low anomaly)
-          0.4: '#10b981', // Emerald
-          0.6: '#eab308', // Yellow/Gold
-          0.8: '#f97316', // Orange
-          1.0: '#ef4444', // Red-hot intense core
-        },
-      });
+      // Gradient color configuration: Cold (cyan/blue) -> Moderate (emerald/lime) -> Warm (yellow/gold) -> Hot intense (orange) -> Deep Red Core
+      if (typeof (L as any).heatLayer === 'function') {
+        const heat = (L as any).heatLayer(heatPoints, {
+          radius: heatRadius,
+          blur: Math.round(heatRadius * 0.72),
+          maxZoom: 18,
+          max: 1.0,
+          minOpacity: 0.28,
+          gradient: {
+            0.15: '#06b6d4', // Cyan (low anomaly)
+            0.35: '#10b981', // Emerald
+            0.55: '#eab308', // Gold / Amber
+            0.75: '#f97316', // Orange
+            1.0: '#ef4444', // Red-hot intense core
+          },
+        });
 
-      heat.addTo(map);
-      heatLayerRef.current = heat;
+        heat.addTo(map);
+        heatLayerRef.current = heat;
+      }
+
+      // 1b. Render Archeological Hotspot Concentration Zones & Beacons
+      if (showHotspotBeacons && archeologicalHotspots.length > 0) {
+        const hotspotGroup = L.layerGroup();
+
+        archeologicalHotspots.forEach((hotspot) => {
+          const zoneColor =
+            hotspot.significance === 'KRITIS_TINGGI'
+              ? '#ef4444'
+              : hotspot.significance === 'TINGGI'
+              ? '#f97316'
+              : '#f59e0b';
+
+          // Concentration radius circle (18m - 28m)
+          const concentrationCircle = L.circle([hotspot.lat, hotspot.lng], {
+            radius: Math.min(28, Math.max(16, hotspot.count * 6.5)),
+            color: zoneColor,
+            weight: 2,
+            dashArray: '4, 4',
+            fillColor: zoneColor,
+            fillOpacity: 0.16,
+            interactive: false,
+          });
+          hotspotGroup.addLayer(concentrationCircle);
+
+          // Animated Hotspot Beacon Marker
+          const beaconIcon = L.divIcon({
+            className: 'archeological-hotspot-beacon',
+            html: `
+              <div style="position: relative; width: 48px; height: 52px; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: transform 0.25s;" onmouseover="this.style.transform='scale(1.2)'" onmouseout="this.style.transform='scale(1)'">
+                <!-- Dual Radiating Flame Pulse Rings -->
+                <div class="hotspot-pulse-ring-elem" style="position: absolute; width: 44px; height: 44px; border-radius: 9999px; border: 2.5px solid ${zoneColor}; pointer-events: none; opacity: 0.95;"></div>
+                <div class="hotspot-pulse-ring-elem" style="position: absolute; width: 44px; height: 44px; border-radius: 9999px; border: 1.5px solid #fbbf24; pointer-events: none; animation-delay: 1.1s; opacity: 0.75;"></div>
+
+                <!-- Top Badge Pill -->
+                <div style="position: absolute; top: -14px; left: 50%; transform: translateX(-50%); z-index: 10; background: linear-gradient(90deg, #b91c1c, #ea580c); color: #fff; font-size: 8px; font-weight: 900; font-family: monospace; padding: 1px 6px; border-radius: 9999px; border: 1px solid #fca5a5; box-shadow: 0 2px 8px rgba(185,28,28,0.7); white-space: nowrap; letter-spacing: 0.4px; display: flex; align-items: center; gap: 3px;">
+                  <span style="color: #fef08a;">🔥</span>
+                  <span>HOTSPOT</span>
+                </div>
+
+                <!-- Flaming Core Body -->
+                <div style="position: relative; z-index: 3; width: 34px; height: 34px; border-radius: 9999px; background: radial-gradient(circle, #fef08a 0%, #f97316 50%, #991b1b 100%); border: 2.5px solid #ffffff; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 16px rgba(249,115,22,0.9), 0 4px 12px rgba(0,0,0,0.8);">
+                  <span style="font-size: 15px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.8));">🔥</span>
+                </div>
+
+                <!-- Bottom Intensity Label -->
+                <div style="position: absolute; bottom: -12px; left: 50%; transform: translateX(-50%); z-index: 10; background: #020617; color: #fdba74; font-size: 7.5px; font-weight: bold; font-family: monospace; padding: 0.5px 4px; border-radius: 4px; border: 1px solid #c2410c; white-space: nowrap;">
+                  ${hotspot.count} Titik • ${hotspot.peakFlux.toFixed(0)}µT
+                </div>
+              </div>
+            `,
+            iconSize: [48, 52],
+            iconAnchor: [24, 26],
+          });
+
+          const beaconMarker = L.marker([hotspot.lat, hotspot.lng], {
+            icon: beaconIcon,
+            zIndexOffset: 850,
+          });
+
+          beaconMarker.bindPopup(`
+            <div style="font-family: ui-sans-serif, system-ui, sans-serif; color: #f1f5f9; min-width: 210px; max-width: 250px; padding: 2px;">
+              <div style="display: flex; align-items: center; gap: 6px; border-bottom: 1px solid #334155; padding-bottom: 6px; margin-bottom: 6px;">
+                <span style="font-size: 16px;">🏛️</span>
+                <div>
+                  <div style="font-weight: 800; font-size: 12px; color: #f97316; font-family: monospace;">HOTSPOT ARKEOLOGIS</div>
+                  <div style="font-size: 10px; color: #94a3b8;">${hotspot.title}</div>
+                </div>
+              </div>
+              <div style="font-size: 11px; space-y: 4px; margin-bottom: 8px;">
+                <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
+                  <span style="color: #94a3b8;">Kepadatan:</span>
+                  <strong style="color: #67e8f9;">${hotspot.count} Temuan Berdekatan</strong>
+                </div>
+                <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
+                  <span style="color: #94a3b8;">Fluks Puncak:</span>
+                  <strong style="color: #f59e0b;">${hotspot.peakFlux.toFixed(1)} µT</strong>
+                </div>
+                <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
+                  <span style="color: #94a3b8;">Rata-rata Kedalaman:</span>
+                  <strong style="color: #cbd5e1;">~${hotspot.avgDepthCm} cm</strong>
+                </div>
+                <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
+                  <span style="color: #94a3b8;">Status Sektor:</span>
+                  <span style="color: #f87171; font-weight: bold; font-family: monospace; font-size: 10px;">${hotspot.significance.replace('_', ' ')}</span>
+                </div>
+              </div>
+              <div style="background: rgba(15, 23, 42, 0.85); border: 1px solid #334155; border-radius: 8px; padding: 6px; font-size: 10px; color: #cbd5e1; line-height: 1.35; margin-bottom: 6px;">
+                🔍 <strong>Rekomendasi Lapangan:</strong> Konsentrasi anomali tinggi mengindikasikan akumulasi logam padat atau sisa struktur artefak kuno. Lakukan pemindaian kisi-kisi (grid) secara teliti.
+              </div>
+            </div>
+          `);
+
+          hotspotGroup.addLayer(beaconMarker);
+        });
+
+        hotspotGroup.addTo(map);
+        archeologicalHotspotsLayerRef.current = hotspotGroup;
+      }
     }
 
     // 2. Render Pin Markers for filtered findings (if enabled)
@@ -850,22 +1483,79 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
               iconAnchor: [14, 14],
             });
           }
+        } else if (
+          finding.isFavorite ||
+          finding.name.toLowerCase().includes('titik pantau') ||
+          finding.name.toLowerCase().includes('pantau') ||
+          finding.note?.toLowerCase().includes('titik pantau')
+        ) {
+          // Distinctive 'Titik Pantau Favorit' Waypoint Beacon Marker (Rotated diamond shield with ruby-rose & gold styling)
+          const isSelected = selectedFinding?.id === finding.id;
+          const shouldDrop = markerAnimation === 'drop_pulse' || markerAnimation === 'drop';
+          const dropClass = shouldDrop ? 'marker-drop-anim' : '';
+
+          customIcon = L.divIcon({
+            className: 'favorite-waypoint-marker',
+            html: `
+              <div class="${dropClass}" style="position: relative; width: 44px; height: 50px; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: transform 0.25s;" onmouseover="this.style.transform='scale(1.25)'" onmouseout="this.style.transform='scale(1)'">
+                <!-- Dual Radiant Pulsing Beacon Radar Rings for Favorite Watchpoint -->
+                <div class="fav-waypoint-pulse-ring" style="position: absolute; width: 42px; height: 42px; border-radius: 9999px; border: 2.5px solid #f43f5e; pointer-events: none; opacity: 0.95;"></div>
+                <div class="fav-waypoint-pulse-ring" style="position: absolute; width: 42px; height: 42px; border-radius: 9999px; border: 1.5px solid #fb7185; pointer-events: none; animation-delay: 1.1s; opacity: 0.75;"></div>
+
+                <!-- Top Badge Pill -->
+                <div style="position: absolute; top: -14px; left: 50%; transform: translateX(-50%); z-index: 10; background: linear-gradient(90deg, #e11d48, #be123c); color: #fff; font-size: 8px; font-weight: 900; font-family: monospace; padding: 1.5px 6px; border-radius: 9999px; border: 1.5px solid #fecdd3; box-shadow: 0 2px 8px rgba(225,29,72,0.7); white-space: nowrap; letter-spacing: 0.5px; display: flex; align-items: center; gap: 3px;">
+                  <span style="color: #fef08a;">★</span>
+                  <span>PANTAU</span>
+                </div>
+
+                <!-- Rotated Diamond Shield Beacon Body -->
+                <div style="position: relative; z-index: 3; width: 32px; height: 32px; border-radius: 10px; transform: rotate(45deg); background: linear-gradient(135deg, #f43f5e 0%, #e11d48 55%, #881337 100%); border: 2.5px solid #ffffff; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 16px rgba(244, 63, 94, 0.9), 0 5px 15px rgba(0,0,0,0.8);">
+                  <div style="transform: rotate(-45deg); display: flex; align-items: center; justify-content: center; font-size: 15px; filter: drop-shadow(0 1px 3px rgba(0,0,0,0.7));">
+                    💖
+                  </div>
+                </div>
+
+                <!-- Diamond Pointer Stem -->
+                <div style="position: absolute; bottom: 2px; width: 9px; height: 9px; background: #881337; transform: rotate(45deg); z-index: 2; border-right: 1.5px solid #ffffff; border-bottom: 1.5px solid #ffffff;"></div>
+              </div>
+            `,
+            iconSize: [44, 50],
+            iconAnchor: [22, 44],
+          });
         } else {
-          // Standard pin marker
+          // Standard pin marker with Drop and Pulse animations
+          const isRecent = Date.now() - finding.timestamp < 1000 * 60 * 15; // Logged within 15 mins
+          const isSelected = selectedFinding?.id === finding.id;
+          const shouldDrop = markerAnimation === 'drop_pulse' || markerAnimation === 'drop';
+          const shouldPulse =
+            (markerAnimation === 'drop_pulse' || markerAnimation === 'pulse') &&
+            (isRecent || finding.isPriority || isSelected);
+
+          const dropClass = shouldDrop ? 'marker-drop-anim' : '';
+
           customIcon = L.divIcon({
             className: 'finding-pin-marker',
             html: `
-              <div style="position: relative; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: transform 0.2s;" onmouseover="this.style.transform='scale(1.2)'" onmouseout="this.style.transform='scale(1)'">
-                <div style="width: 28px; height: 28px; border-radius: 9999px; background: ${pinColor}; border: 2px solid #ffffff; display: flex; align-items: center; justify-content: center; color: #000; font-weight: bold; font-size: 13px; box-shadow: 0 4px 12px rgba(0,0,0,0.5);">
+              <div class="${dropClass}" style="position: relative; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: transform 0.2s;" onmouseover="this.style.transform='scale(1.2)'" onmouseout="this.style.transform='scale(1)'">
+                ${
+                  shouldPulse
+                    ? `
+                      <div class="marker-pulse-ring-elem" style="position: absolute; width: 38px; height: 38px; border-radius: 9999px; border: 2.5px solid ${pinColor}; pointer-events: none; opacity: 0.9;"></div>
+                      <div class="marker-pulse-ring-elem" style="position: absolute; width: 38px; height: 38px; border-radius: 9999px; border: 1.5px solid ${pinColor}; pointer-events: none; animation-delay: 0.8s; opacity: 0.7;"></div>
+                    `
+                    : ''
+                }
+                <div style="position: relative; z-index: 2; width: 28px; height: 28px; border-radius: 9999px; background: ${pinColor}; border: 2px solid #ffffff; display: flex; align-items: center; justify-content: center; color: #000; font-weight: bold; font-size: 13px; box-shadow: 0 4px 14px rgba(0,0,0,0.6);">
                   ${symbol}
                 </div>
-                ${finding.isPriority ? '<div style="position: absolute; top: -5px; right: -5px; background: #f59e0b; color: #000; font-size: 10px; width: 16px; height: 16px; border-radius: 9999px; display: flex; align-items: center; justify-content: center; font-weight: 900; border: 1.5px solid #fff; box-shadow: 0 0 8px #f59e0b;">★</div>' : ''}
-                ${finding.isFavorite ? '<div style="position: absolute; top: -5px; left: -5px; background: #e11d48; color: #fff; font-size: 10px; width: 17px; height: 17px; border-radius: 9999px; display: flex; align-items: center; justify-content: center; font-weight: 900; border: 1.5px solid #fff; box-shadow: 0 0 8px #e11d48;">❤️</div>' : ''}
-                <div style="position: absolute; bottom: -4px; width: 6px; height: 6px; background: ${pinColor}; transform: rotate(45deg);"></div>
+                ${isRecent ? '<div style="position: absolute; top: -14px; left: 50%; transform: translateX(-50%); z-index: 5; background: #06b6d4; color: #020617; font-size: 8px; font-weight: 900; font-family: monospace; padding: 1px 5px; border-radius: 4px; border: 1px solid #ffffff; box-shadow: 0 1px 4px rgba(0,0,0,0.6); white-space: nowrap;">BARU</div>' : ''}
+                ${finding.isPriority ? '<div style="position: absolute; top: -5px; right: -5px; z-index: 4; background: #f59e0b; color: #000; font-size: 10px; width: 16px; height: 16px; border-radius: 9999px; display: flex; align-items: center; justify-content: center; font-weight: 900; border: 1.5px solid #fff; box-shadow: 0 0 8px #f59e0b;">★</div>' : ''}
+                ${finding.isFavorite ? '<div style="position: absolute; top: -5px; left: -5px; z-index: 4; background: #e11d48; color: #fff; font-size: 10px; width: 17px; height: 17px; border-radius: 9999px; display: flex; align-items: center; justify-content: center; font-weight: 900; border: 1.5px solid #fff; box-shadow: 0 0 8px #e11d48;">❤️</div>' : ''}
+                <div style="position: absolute; bottom: 0px; width: 6px; height: 6px; background: ${pinColor}; transform: rotate(45deg); z-index: 1;"></div>
               </div>
             `,
-            iconSize: [32, 32],
-            iconAnchor: [16, 28],
+            iconSize: [36, 36],
+            iconAnchor: [18, 30],
           });
         }
 
@@ -906,18 +1596,27 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
     }
   }, [
     filteredFindings,
+    archeologicalHotspots,
     onSelectFinding,
     showHeatmap,
+    showHotspotBeacons,
     showPins,
     heatRadius,
     isRoutePlannerActive,
     selectedRouteFindingIds,
     calculatedRoute,
+    markerAnimation,
+    selectedFinding?.id,
   ]);
 
   const centerOnUser = () => {
     if (!mapInstanceRef.current || !userLocation) return;
-    mapInstanceRef.current.setView([userLocation.lat, userLocation.lng], 18, { animate: true });
+    setIsAutoPanActive(true);
+    mapInstanceRef.current.panTo([userLocation.lat, userLocation.lng], {
+      animate: true,
+      duration: 1.5,
+      easeLinearity: 0.25,
+    });
   };
 
   const fitAllFindings = () => {
@@ -930,8 +1629,6 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
     }
     mapInstanceRef.current.fitBounds(group.getBounds().pad(0.2), { animate: true });
   };
-
-  const [isHeatmapSettingsOpen, setIsHeatmapSettingsOpen] = useState<boolean>(false);
 
   return (
     <div className="relative w-full h-[380px] md:h-[480px] rounded-3xl overflow-hidden border border-slate-800 shadow-2xl bg-slate-950 flex flex-col">
@@ -966,21 +1663,29 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
             )}
           </button>
 
-          {/* Heatmap Toggle Button */}
+          {/* Heatmap & Archeological Hotspot Toggle Button */}
           <button
             type="button"
             onClick={() => setShowHeatmap(!showHeatmap)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full backdrop-blur-md border text-xs font-mono shadow-lg active:scale-95 transition-all ${
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full backdrop-blur-md border text-xs font-mono shadow-lg active:scale-95 transition-all shrink-0 ${
               showHeatmap
-                ? 'bg-gradient-to-r from-orange-600/90 to-red-600/90 border-orange-400/80 text-white shadow-orange-950/50'
+                ? 'bg-gradient-to-r from-amber-600 via-orange-600 to-red-600 border-amber-300 text-white shadow-amber-950/70 font-bold'
                 : 'bg-slate-900/90 border-slate-700/80 text-slate-400 hover:text-slate-200'
             }`}
-            title="Aktifkan/Nonaktifkan Lapisan Heatmap Kerapatan Logam"
+            title="Heatmap: Visualisasi kerapatan dan anomali konsentrasi logam tinggi untuk menemukan hotspot arkeologis"
           >
-            <Flame className={`w-3.5 h-3.5 ${showHeatmap ? 'text-amber-300 animate-pulse' : 'text-slate-400'}`} />
+            <Flame className={`w-3.5 h-3.5 ${showHeatmap ? 'text-amber-200 animate-pulse' : 'text-slate-400'}`} />
             <span>Heatmap</span>
-            {showHeatmap && (
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+            {archeologicalHotspots.length > 0 && (
+              <span
+                className={`text-[9px] px-1.5 py-0.2 rounded-full font-bold ${
+                  showHeatmap
+                    ? 'bg-amber-950 text-amber-200 border border-amber-400/50'
+                    : 'bg-slate-800 text-slate-400'
+                }`}
+              >
+                {archeologicalHotspots.length} Hotspot
+              </span>
             )}
           </button>
 
@@ -1037,6 +1742,30 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
             </span>
           </button>
 
+          {/* Quick Pin (Titik Pantau Favorit) Button */}
+          <button
+            type="button"
+            onClick={() => {
+              if (onQuickPin) {
+                onQuickPin();
+              }
+              if (mapInstanceRef.current && userLocation) {
+                setIsAutoPanActive(true);
+                mapInstanceRef.current.panTo([userLocation.lat, userLocation.lng], {
+                  animate: true,
+                  duration: 1.5,
+                  easeLinearity: 0.25,
+                });
+              }
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-gradient-to-r from-rose-600 via-pink-600 to-amber-500 hover:from-rose-500 hover:to-amber-400 text-white font-mono text-xs font-bold shadow-lg shadow-rose-950/60 border border-rose-300/60 active:scale-95 transition-all group shrink-0"
+            title="Quick Pin: Tandai lokasi saat ini dengan satu klik cepat & simpan sebagai Titik Pantau Favorit"
+          >
+            <Heart className="w-3.5 h-3.5 fill-current text-white group-hover:scale-125 transition-transform animate-pulse" />
+            <span>Quick Pin</span>
+            <span className="hidden sm:inline text-[10px] text-rose-100 font-normal">Titik Pantau</span>
+          </button>
+
           {/* Route Planner Toggle Button */}
           {findings.length > 0 && (
             <button
@@ -1065,9 +1794,64 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
             </button>
           )}
 
-          {/* Opsi Pengalihan Layer Peta: Map, Satellite, Terrain */}
+          {/* Track Logger (Jejak Pencarian GPS) Toggle Button */}
+          <button
+            type="button"
+            onClick={() => setShowTrackLog(!showTrackLog)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full backdrop-blur-md border text-xs font-mono shadow-lg active:scale-95 transition-all ${
+              showTrackLog
+                ? 'bg-gradient-to-r from-teal-600/90 to-emerald-600/90 border-teal-400 text-white shadow-teal-950/60 font-bold'
+                : 'bg-slate-900/90 border-slate-700/80 text-slate-400 hover:text-slate-200'
+            }`}
+            title="Track Logger: Merekam & menampilkan jalur lintasan GPS pencarian sebagai garis polyline di peta"
+          >
+            <Footprints className={`w-3.5 h-3.5 ${showTrackLog ? 'text-teal-200 animate-pulse' : 'text-slate-400'}`} />
+            <span>Track Logger</span>
+            {trailPoints.length > 0 && (
+              <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-teal-950/90 text-teal-200 font-bold border border-teal-400/40">
+                {trailPoints.length} pt
+              </span>
+            )}
+          </button>
+
+          {/* Marker Animation Preference Toggle Button */}
+          <button
+            type="button"
+            onClick={() => {
+              setMarkerAnimation((prev) => {
+                if (prev === 'drop_pulse') return 'pulse';
+                if (prev === 'pulse') return 'drop';
+                if (prev === 'drop') return 'none';
+                return 'drop_pulse';
+              });
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-900/90 backdrop-blur-md border border-slate-700/80 text-xs font-mono text-cyan-300 hover:text-white shadow-lg active:scale-95 transition-all"
+            title={`Animasi Penanda Peta: ${
+              markerAnimation === 'drop_pulse'
+                ? 'Drop & Pulse Aktif'
+                : markerAnimation === 'pulse'
+                ? 'Hanya Pulse Gelombang'
+                : markerAnimation === 'drop'
+                ? 'Hanya Drop Jatuh'
+                : 'Animasi Nonaktif'
+            }. Klik untuk mengganti mode.`}
+          >
+            <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
+            <span className="hidden sm:inline">Animasi:</span>
+            <span className="font-bold text-white uppercase text-[10px]">
+              {markerAnimation === 'drop_pulse'
+                ? 'Drop+Pulse'
+                : markerAnimation === 'pulse'
+                ? 'Pulse'
+                : markerAnimation === 'drop'
+                ? 'Drop'
+                : 'Off'}
+            </span>
+          </button>
+
+          {/* Opsi Pengalihan Layer Peta: Peta Jalan, Citra Satelit, Topografi Medan */}
           <div className="flex items-center p-0.5 rounded-full bg-slate-900/95 backdrop-blur-md border border-slate-700/80 shadow-lg font-mono text-xs">
-            {/* 1. Map */}
+            {/* 1. Map (Peta Jalan) */}
             <button
               type="button"
               onClick={() => setActiveLayer('map')}
@@ -1076,13 +1860,13 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
                   ? 'bg-cyan-500 text-slate-950 shadow-md font-bold'
                   : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
               }`}
-              title="Layer Peta Standar / Vektor Jalan (Map)"
+              title="Lapisan Peta Jalan & Vektor Transportasi (Street Map)"
             >
               <Map className="w-3 h-3" />
-              <span>Map</span>
+              <span>Peta Jalan</span>
             </button>
 
-            {/* 2. Satellite */}
+            {/* 2. Satellite (Citra Satelit) */}
             <button
               type="button"
               onClick={() => setActiveLayer('satellite')}
@@ -1091,13 +1875,13 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
                   ? 'bg-sky-500 text-slate-950 shadow-md font-bold'
                   : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
               }`}
-              title="Layer Citra Satelit Udara Resolusi Tinggi (Satellite)"
+              title="Lapisan Citra Satelit Udara Resolusi Tinggi (Satellite Imagery)"
             >
               <Globe className="w-3 h-3" />
-              <span>Satellite</span>
+              <span>Citra Satelit</span>
             </button>
 
-            {/* 3. Terrain */}
+            {/* 3. Terrain (Peta Topografi Medan) */}
             <button
               type="button"
               onClick={() => setActiveLayer('terrain')}
@@ -1106,10 +1890,10 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
                   ? 'bg-emerald-500 text-slate-950 shadow-md font-bold'
                   : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
               }`}
-              title="Layer Topografi Medan & Kontur Elevasi (Terrain)"
+              title="Lapisan Peta Topografi Medan, Kontur Elevasi & Relief Gunung (Terrain)"
             >
               <Mountain className="w-3 h-3" />
-              <span>Terrain</span>
+              <span>Peta Topografi</span>
             </button>
 
             {/* Dropdown for More / Custom Layers */}
@@ -1121,11 +1905,64 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
                   ? 'bg-slate-800 text-cyan-400'
                   : 'hover:bg-slate-800/60'
               }`}
-              title="Opsi Lapisan Lainnya & Pengaturan Overlay (Taktis Gelap, Kontur Ekstrem, Label, Relief)"
+              title="Opsi Lapisan Tambahan & Pengaturan Overlay (Taktis Gelap, OpenTopo, Label Jalan, Relief 3D)"
             >
               <ChevronDown className={`w-3 h-3 transition-transform duration-200 ${isLayerMenuOpen ? 'rotate-180' : ''}`} />
             </button>
           </div>
+
+          {/* Historical Markers (Situs Arkeologi Terbuka) Button */}
+          <button
+            type="button"
+            onClick={() => setIsHistoricalMarkersModalOpen(true)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full backdrop-blur-md border text-xs font-mono shadow-lg active:scale-95 transition-all ${
+              showHistoricalMarkers
+                ? 'bg-gradient-to-r from-amber-600/90 to-yellow-600/90 border-amber-400 text-slate-950 font-extrabold shadow-amber-950/60'
+                : 'bg-slate-900/90 border-slate-700/80 text-amber-300 hover:text-white'
+            }`}
+            title="Situs Arkeologi Terbuka (Historical Markers): Jelajahi situs sejarah berpotensi artefak tinggi dari open database"
+          >
+            <Landmark className="w-3.5 h-3.5" />
+            <span>Situs Arkeologi</span>
+            <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-950 text-amber-300 font-bold border border-amber-400/40">
+              {HISTORICAL_MARKERS_DATA.length}
+            </span>
+          </button>
+
+          {/* Terrain 3D Analysis Button */}
+          <button
+            type="button"
+            onClick={() => {
+              const centerLat = userLocation?.lat || (mapInstanceRef.current ? mapInstanceRef.current.getCenter().lat : -7.5583);
+              const centerLng = userLocation?.lng || (mapInstanceRef.current ? mapInstanceRef.current.getCenter().lng : 112.3811);
+              setTerrain3DCenter({
+                lat: centerLat,
+                lng: centerLng,
+                title: userLocation ? 'Posisi GPS Pendeteksian Lapangan' : 'Area Peta Eksplorasi',
+              });
+              setIsTerrain3DModalOpen(true);
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-gradient-to-r from-emerald-600/90 to-teal-600/90 hover:from-emerald-500 hover:to-teal-500 text-white font-mono font-bold text-xs shadow-lg shadow-emerald-950/50 border border-emerald-400 active:scale-95 transition-all"
+            title="Terrain 3D Analysis: Visualisasi 3D elevasi & analisis kemiringan lereng untuk mendeteksi bahaya tebing/jurang saat survei logam"
+          >
+            <Mountain className="w-3.5 h-3.5 text-emerald-200" />
+            <span>Terrain 3D</span>
+          </button>
+
+          {/* Slope Danger Overlay Toggle */}
+          <button
+            type="button"
+            onClick={() => setShowSlopeAnalysis(!showSlopeAnalysis)}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full backdrop-blur-md border text-xs font-mono shadow-lg active:scale-95 transition-all ${
+              showSlopeAnalysis
+                ? 'bg-rose-500/20 border-rose-400 text-rose-300 font-bold'
+                : 'bg-slate-900/90 border-slate-700/80 text-slate-400 hover:text-slate-200'
+            }`}
+            title="Overlay Kontur Kemiringan Lereng di Peta: Hijau (Datar), Kuning (Sedang), Jingga (Curam), Merah (Bahaya Jurang)"
+          >
+            <TrendingDown className={`w-3.5 h-3.5 ${showSlopeAnalysis ? 'text-rose-400 animate-pulse' : 'text-slate-400'}`} />
+            <span className="hidden sm:inline">Kontur Lereng</span>
+          </button>
 
           {/* Gemini AI Hotspots Suggestion */}
           {findings.length > 0 && onOpenHotspotsModal && (
@@ -1165,105 +2002,296 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
             </button>
           )}
 
-          {/* Re-center user */}
+          {/* Re-center user & Smooth Auto-Pan Status */}
           <button
             type="button"
             onClick={centerOnUser}
             disabled={!userLocation}
-            className={`p-2 rounded-full backdrop-blur-md border shadow-lg active:scale-95 transition-all ${
+            className={`p-2 rounded-full backdrop-blur-md border shadow-lg active:scale-95 transition-all relative ${
               userLocation
-                ? 'bg-slate-900/90 border-slate-700/80 text-cyan-400 hover:bg-slate-800'
+                ? isAutoPanActive
+                  ? 'bg-slate-900/95 border-emerald-400 text-emerald-300 shadow-emerald-950/50 ring-1 ring-emerald-400/50'
+                  : 'bg-slate-900/90 border-slate-700/80 text-cyan-400 hover:bg-slate-800'
                 : 'bg-slate-900/50 border-slate-800 text-slate-600 cursor-not-allowed'
             }`}
-            title="Pusatkan ke Lokasi Saya Sekarang"
+            title={
+              isAutoPanActive
+                ? 'Panning Halus Aktif: Peta bergeser perlahan mengikuti pergerakan lokasi GPS Anda'
+                : 'Pusatkan & Aktifkan Panning Halus ke Lokasi GPS Sekarang'
+            }
           >
-            <Navigation className="w-4 h-4" />
+            <Navigation className={`w-4 h-4 ${isAutoPanActive ? 'text-emerald-400 animate-pulse' : ''}`} />
+            {isAutoPanActive && userLocation && (
+              <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+            )}
           </button>
         </div>
       </div>
 
-      {/* Category Filter Chips Bar */}
+      {/* Category & Search Radius Filter Chips Bar */}
       {showFilterBar && (
-        <div className="absolute top-13 left-3 right-3 z-[400] flex items-center gap-1.5 overflow-x-auto no-scrollbar py-1 pointer-events-auto">
-          <div className="flex items-center gap-1.5 bg-slate-900/95 backdrop-blur-md p-1 rounded-2xl border border-slate-700/80 shadow-2xl">
-            {CATEGORY_FILTER_OPTIONS.map((opt) => {
-              const count = categoryCounts[opt.id] || 0;
-              const isSelected = selectedCategory === opt.id;
+        <div className="absolute top-13 left-3 right-3 z-[400] flex flex-col gap-1.5 pointer-events-auto">
+          {/* Row 1: Metal Category Chips */}
+          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5">
+            <div className="flex items-center gap-1.5 bg-slate-900/95 backdrop-blur-md p-1 rounded-2xl border border-slate-700/80 shadow-2xl">
+              {CATEGORY_FILTER_OPTIONS.map((opt) => {
+                const count = categoryCounts[opt.id] || 0;
+                const isSelected = selectedCategory === opt.id;
 
-              return (
-                <button
-                  key={opt.id}
-                  type="button"
-                  onClick={() => setSelectedCategory(opt.id)}
-                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-mono transition-all whitespace-nowrap ${
-                    isSelected
-                      ? `${opt.activeBg} border ${opt.activeBorder} text-white font-bold shadow-md`
-                      : 'bg-slate-950/60 border border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700'
-                  }`}
-                >
-                  <span style={{ color: opt.color }}>{opt.symbol}</span>
-                  <span>{opt.label}</span>
-                  <span
-                    className={`text-[10px] px-1.5 py-0.2 rounded-full ${
-                      isSelected ? 'bg-slate-900 text-white font-bold' : 'bg-slate-800 text-slate-400'
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => setSelectedCategory(opt.id)}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-mono transition-all whitespace-nowrap ${
+                      isSelected
+                        ? `${opt.activeBg} border ${opt.activeBorder} text-white font-bold shadow-md`
+                        : 'bg-slate-950/60 border border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700'
                     }`}
                   >
-                    {count}
-                  </span>
-                </button>
-              );
-            })}
+                    <span style={{ color: opt.color }}>{opt.symbol}</span>
+                    <span>{opt.label}</span>
+                    <span
+                      className={`text-[10px] px-1.5 py-0.2 rounded-full ${
+                        isSelected ? 'bg-slate-900 text-white font-bold' : 'bg-slate-800 text-slate-400'
+                      }`}
+                    >
+                      {count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Row 2: Search Radius (Radius Pencarian) Chips */}
+          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5">
+            <div className="flex items-center gap-1 bg-slate-900/95 backdrop-blur-md px-2.5 py-1 rounded-2xl border border-cyan-500/40 shadow-xl text-xs font-mono">
+              <span className="text-[10px] text-cyan-400 font-bold uppercase tracking-wider flex items-center gap-1 mr-1">
+                <Target className="w-3 h-3 text-cyan-400" />
+                <span>Radius Pencarian:</span>
+              </span>
+
+              {[
+                { id: 'all' as const, label: 'Semua Area', count: findings.length },
+                { id: 10 as const, label: '10m', count: radiusCounts[10] },
+                { id: 25 as const, label: '25m', count: radiusCounts[25] },
+                { id: 50 as const, label: '50m', count: radiusCounts[50] },
+                { id: 100 as const, label: '100m', count: radiusCounts[100] },
+                { id: 250 as const, label: '250m', count: radiusCounts[250] },
+              ].map((r) => {
+                const isSelected = searchRadius === r.id;
+                return (
+                  <button
+                    key={String(r.id)}
+                    type="button"
+                    onClick={() => setSearchRadius(r.id)}
+                    className={`flex items-center gap-1 px-2.5 py-0.5 rounded-xl text-xs font-mono transition-all whitespace-nowrap ${
+                      isSelected
+                        ? 'bg-cyan-500 text-slate-950 font-extrabold shadow-sm'
+                        : 'bg-slate-950/70 text-slate-300 hover:text-white hover:bg-slate-800 border border-slate-800'
+                    }`}
+                    title={
+                      r.id === 'all'
+                        ? 'Tampilkan semua temuan tanpa batasan radius'
+                        : `Filter temuan dalam radius ${r.id} meter dari posisi GPS saya (${r.count} titik)`
+                    }
+                  >
+                    <span>{r.label}</span>
+                    <span
+                      className={`text-[9px] px-1.5 py-0.2 rounded-full font-bold ${
+                        isSelected ? 'bg-cyan-950 text-cyan-300' : 'bg-slate-800 text-slate-400'
+                      }`}
+                    >
+                      {r.count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
       )}
 
-      {/* Heatmap Legend & Radius Slider (When Heatmap Active) */}
+      {/* Heatmap & Archeological Hotspots HUD Panel (When Heatmap Active) */}
       {showHeatmap && (
-        <div className={`absolute ${showFilterBar ? 'top-26' : 'top-14'} left-3 z-[400] flex flex-col gap-1.5 pointer-events-auto transition-all`}>
-          <div className="bg-slate-900/90 backdrop-blur-md p-2 rounded-2xl border border-slate-700/80 shadow-xl font-mono text-[10px] text-slate-300 flex flex-col gap-1.5">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-1 text-amber-400 font-bold">
-                <Flame className="w-3 h-3 text-orange-400" />
-                <span>Intensitas Logam</span>
+        <div className={`absolute ${showFilterBar ? 'top-32 sm:top-28' : 'top-14'} left-3 z-[400] flex flex-col gap-1.5 pointer-events-auto transition-all`}>
+          <div className="bg-slate-900/95 backdrop-blur-md p-2.5 rounded-2xl border border-amber-500/50 shadow-2xl shadow-black/80 font-mono text-[10px] text-slate-300 flex flex-col gap-2 max-w-[210px] sm:max-w-[240px]">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 text-amber-300 font-bold">
+                <Flame className="w-3.5 h-3.5 text-orange-400 animate-pulse" />
+                <span className="text-[11px]">Heatmap Hotspot</span>
               </div>
               <button
                 type="button"
                 onClick={() => setIsHeatmapSettingsOpen(!isHeatmapSettingsOpen)}
-                className="text-[9px] text-cyan-400 hover:underline px-1 py-0.5"
+                className="text-[9px] text-cyan-400 hover:text-white px-1.5 py-0.5 rounded-lg bg-slate-800/80 border border-slate-700/80 hover:border-cyan-400 transition-all font-semibold"
               >
-                {isHeatmapSettingsOpen ? 'Tutup' : 'Radius'}
+                {isHeatmapSettingsOpen ? 'Tutup Opsi' : 'Atur Hotspot'}
               </button>
             </div>
 
-            {/* Gradient Bar */}
-            <div className="w-36 h-2 rounded-full bg-gradient-to-r from-cyan-500 via-emerald-400 via-yellow-400 via-orange-500 to-red-600 border border-slate-700"></div>
-            <div className="flex items-center justify-between text-[8px] text-slate-400 font-mono">
-              <span>Rendah</span>
-              <span>Sedang</span>
-              <span className="text-red-400 font-semibold">Tinggi / Padat</span>
+            {/* Gradient Bar with Anomaly Flux Reference */}
+            <div>
+              <div className="w-full h-2 rounded-full bg-gradient-to-r from-cyan-500 via-emerald-400 via-yellow-400 via-orange-500 to-red-600 border border-slate-700 shadow-inner"></div>
+              <div className="flex items-center justify-between text-[8px] text-slate-400 font-mono mt-0.5">
+                <span>&lt;65µT</span>
+                <span>90µT</span>
+                <span className="text-red-400 font-bold">&gt;130µT Inti</span>
+              </div>
             </div>
 
-            {/* Adjustable Radius Slider dropdown */}
+            {/* Hotspot Cluster Counter Badge */}
+            {archeologicalHotspots.length > 0 ? (
+              <div className="flex items-center justify-between bg-amber-950/40 border border-amber-500/40 px-2 py-1 rounded-xl text-[9px] text-amber-200">
+                <span className="flex items-center gap-1">
+                  <span>🏛️</span>
+                  <span>{archeologicalHotspots.length} Hotspot Terdeteksi</span>
+                </span>
+                <span className="font-bold text-amber-400">Padat</span>
+              </div>
+            ) : (
+              <div className="text-[9px] text-slate-400 italic">
+                Belum ada klaster padat temuan di area ini.
+              </div>
+            )}
+
+            {/* Adjustable Settings Drawer: Radius, Beacons, Focus Mode */}
             {isHeatmapSettingsOpen && (
-              <div className="mt-1 pt-1.5 border-t border-slate-800 flex flex-col gap-1">
-                <div className="flex items-center justify-between text-[9px] text-slate-400">
-                  <span>Radius Sebar:</span>
-                  <span className="font-bold text-slate-200">{heatRadius}px</span>
+              <div className="mt-0.5 pt-2 border-t border-slate-800 flex flex-col gap-2 animate-in fade-in duration-150">
+                {/* 1. Radius Sebar */}
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center justify-between text-[9px] text-slate-300">
+                    <span>Radius Sebar Panas:</span>
+                    <span className="font-bold text-amber-300">{heatRadius}px</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={15}
+                    max={65}
+                    step={5}
+                    value={heatRadius}
+                    onChange={(e) => setHeatRadius(Number(e.target.value))}
+                    className="w-full accent-amber-500 h-1.5 bg-slate-800 rounded-lg cursor-pointer"
+                  />
                 </div>
-                <input
-                  type="range"
-                  min={15}
-                  max={65}
-                  step={5}
-                  value={heatRadius}
-                  onChange={(e) => setHeatRadius(Number(e.target.value))}
-                  className="w-full accent-orange-500 h-1.5 bg-slate-800 rounded-lg cursor-pointer"
-                />
+
+                {/* 2. Toggle Hotspot Beacons */}
+                <button
+                  type="button"
+                  onClick={() => setShowHotspotBeacons(!showHotspotBeacons)}
+                  className={`w-full flex items-center justify-between p-1.5 rounded-xl border text-[9px] font-mono transition-all ${
+                    showHotspotBeacons
+                      ? 'bg-amber-500/20 border-amber-500/60 text-amber-200 font-semibold'
+                      : 'bg-slate-950/80 border-slate-800 text-slate-400'
+                  }`}
+                >
+                  <span className="flex items-center gap-1">
+                    <span>🔥</span>
+                    <span>Tandai Titik Hotspot</span>
+                  </span>
+                  <span className={`w-2 h-2 rounded-full ${showHotspotBeacons ? 'bg-amber-400 animate-pulse' : 'bg-slate-700'}`} />
+                </button>
+
+                {/* 3. Pure Heatmap Focus (Toggle Pins) */}
+                <button
+                  type="button"
+                  onClick={() => setShowPins(!showPins)}
+                  className={`w-full flex items-center justify-between p-1.5 rounded-xl border text-[9px] font-mono transition-all ${
+                    !showPins
+                      ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200 font-bold'
+                      : 'bg-slate-950/80 border-slate-800 text-slate-400'
+                  }`}
+                  title="Sembunyikan pin marker agar konsentrasi sebaran thermal terlihat murni"
+                >
+                  <span className="flex items-center gap-1">
+                    {!showPins ? <Eye className="w-3 h-3 text-cyan-400" /> : <EyeOff className="w-3 h-3 text-slate-500" />}
+                    <span>Fokus Heatmap Murni</span>
+                  </span>
+                  <span className={`text-[8px] font-bold ${!showPins ? 'text-cyan-300' : 'text-slate-500'}`}>
+                    {!showPins ? 'AKTIF' : 'PIN ON'}
+                  </span>
+                </button>
               </div>
             )}
           </div>
         </div>
       )}
+
+      {/* Marker & Hotspot Animation Keyframe Styles */}
+      <style>{`
+        @keyframes marker-drop {
+          0% {
+            transform: translateY(-42px) scale(0.5);
+            opacity: 0;
+          }
+          50% {
+            transform: translateY(6px) scale(1.12);
+            opacity: 1;
+          }
+          75% {
+            transform: translateY(-3px) scale(0.96);
+          }
+          100% {
+            transform: translateY(0) scale(1);
+            opacity: 1;
+          }
+        }
+        @keyframes marker-pulse-ring {
+          0% {
+            transform: scale(0.7);
+            opacity: 0.95;
+          }
+          50% {
+            transform: scale(1.9);
+            opacity: 0.35;
+          }
+          100% {
+            transform: scale(2.6);
+            opacity: 0;
+          }
+        }
+        .marker-drop-anim {
+          animation: marker-drop 0.65s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+        }
+        .marker-pulse-ring-elem {
+          animation: marker-pulse-ring 2.2s infinite cubic-bezier(0.215, 0.61, 0.355, 1);
+        }
+        @keyframes fav-beacon-pulse {
+          0% {
+            transform: scale(0.65);
+            opacity: 0.95;
+          }
+          50% {
+            transform: scale(2.05);
+            opacity: 0.35;
+          }
+          100% {
+            transform: scale(2.85);
+            opacity: 0;
+          }
+        }
+        .fav-waypoint-pulse-ring {
+          animation: fav-beacon-pulse 2.2s infinite cubic-bezier(0.215, 0.61, 0.355, 1);
+        }
+        @keyframes hotspot-pulse-ring {
+          0% {
+            transform: scale(0.65);
+            opacity: 0.95;
+          }
+          50% {
+            transform: scale(2.2);
+            opacity: 0.35;
+          }
+          100% {
+            transform: scale(3.1);
+            opacity: 0;
+          }
+        }
+        .hotspot-pulse-ring-elem {
+          animation: hotspot-pulse-ring 2.0s infinite cubic-bezier(0.215, 0.61, 0.355, 1);
+        }
+      `}</style>
 
       {/* Actual Leaflet Map Canvas */}
       <div ref={mapContainerRef} className="w-full h-full z-0" />
@@ -1557,6 +2585,92 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
                       showHillshade ? 'bg-emerald-400 animate-pulse' : 'bg-slate-700'
                     }`}
                   />
+                </button>
+
+                {/* Toggle Heatmap Hotspot */}
+                <button
+                  type="button"
+                  onClick={() => setShowHeatmap(!showHeatmap)}
+                  className={`col-span-2 flex items-center justify-between p-2.5 rounded-xl border text-xs font-mono transition-all ${
+                    showHeatmap
+                      ? 'bg-amber-500/20 border-amber-400 text-amber-200 font-bold shadow-sm'
+                      : 'bg-slate-900/80 border-slate-800 text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <Flame className={`w-3.5 h-3.5 ${showHeatmap ? 'text-amber-400' : 'text-slate-500'}`} />
+                    <span>Visualisasi Heatmap & Hotspot Arkeologis</span>
+                  </div>
+                  <span
+                    className={`w-2 h-2 rounded-full ${
+                      showHeatmap ? 'bg-amber-400 animate-pulse' : 'bg-slate-700'
+                    }`}
+                  />
+                </button>
+
+                {/* Toggle Historical Markers */}
+                <button
+                  type="button"
+                  onClick={() => setShowHistoricalMarkers(!showHistoricalMarkers)}
+                  className={`flex items-center justify-between p-2.5 rounded-xl border text-xs font-mono transition-all ${
+                    showHistoricalMarkers
+                      ? 'bg-amber-500/20 border-amber-400 text-amber-200 font-bold shadow-sm'
+                      : 'bg-slate-900/80 border-slate-800 text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <Landmark className={`w-3.5 h-3.5 ${showHistoricalMarkers ? 'text-amber-400' : 'text-slate-500'}`} />
+                    <span>Situs Arkeologi</span>
+                  </div>
+                  <span
+                    className={`w-2 h-2 rounded-full ${
+                      showHistoricalMarkers ? 'bg-amber-400 animate-pulse' : 'bg-slate-700'
+                    }`}
+                  />
+                </button>
+
+                {/* Toggle Slope Danger Overlay */}
+                <button
+                  type="button"
+                  onClick={() => setShowSlopeAnalysis(!showSlopeAnalysis)}
+                  className={`flex items-center justify-between p-2.5 rounded-xl border text-xs font-mono transition-all ${
+                    showSlopeAnalysis
+                      ? 'bg-rose-500/20 border-rose-400 text-rose-200 font-bold shadow-sm'
+                      : 'bg-slate-900/80 border-slate-800 text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <TrendingDown className={`w-3.5 h-3.5 ${showSlopeAnalysis ? 'text-rose-400' : 'text-slate-500'}`} />
+                    <span>Kontur Lereng</span>
+                  </div>
+                  <span
+                    className={`w-2 h-2 rounded-full ${
+                      showSlopeAnalysis ? 'bg-rose-400 animate-pulse' : 'bg-slate-700'
+                    }`}
+                  />
+                </button>
+
+                {/* Quick Launcher for 3D Terrain Analysis */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsLayerMenuOpen(false);
+                    const centerLat = userLocation?.lat || (mapInstanceRef.current ? mapInstanceRef.current.getCenter().lat : -7.5583);
+                    const centerLng = userLocation?.lng || (mapInstanceRef.current ? mapInstanceRef.current.getCenter().lng : 112.3811);
+                    setTerrain3DCenter({
+                      lat: centerLat,
+                      lng: centerLng,
+                      title: userLocation ? 'Posisi GPS Pendeteksian Lapangan' : 'Area Peta Eksplorasi',
+                    });
+                    setIsTerrain3DModalOpen(true);
+                  }}
+                  className="col-span-2 flex items-center justify-between p-2.5 rounded-xl bg-gradient-to-r from-emerald-950/80 to-teal-950/80 border border-emerald-500/50 text-emerald-200 font-bold text-xs font-mono hover:from-emerald-900/90 hover:to-teal-900/90 transition-all shadow-md"
+                >
+                  <div className="flex items-center gap-2">
+                    <Mountain className="w-4 h-4 text-emerald-400" />
+                    <span>Buka Terrain 3D Analysis Interaktif</span>
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-emerald-400" />
                 </button>
               </div>
             </div>
@@ -1916,6 +3030,14 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
             </div>
           </div>
 
+          {selectedFinding.locationName && (
+            <div className="mt-2 flex items-center gap-1.5 text-[11px] font-mono text-cyan-300 bg-cyan-950/50 p-2 rounded-lg border border-cyan-800/50">
+              <MapPin className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+              <span className="text-[9px] text-cyan-400/80 uppercase font-bold tracking-wider shrink-0">Lokasi / Landmark:</span>
+              <span className="truncate font-semibold text-slate-100">{selectedFinding.locationName}</span>
+            </div>
+          )}
+
           {selectedFinding.note && (
             <p className="mt-2 text-xs text-slate-300 bg-slate-950/60 p-2 rounded-lg border border-slate-800">
               Catatan: {selectedFinding.note}
@@ -2051,6 +3173,89 @@ export const FindingsMap: React.FC<FindingsMapProps> = ({
             mapInstanceRef.current.setView([finding.lat, finding.lng], 18, { animate: true });
           }
           setSelectedFinding(finding);
+        }}
+      />
+
+      {/* Floating Slope Hazard HUD pill when Slope Analysis is active */}
+      {showSlopeAnalysis && currentSlopeInfo && (
+        <div className="absolute bottom-12 left-3 z-[410] pointer-events-auto animate-in fade-in duration-200">
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-2xl bg-slate-900/95 backdrop-blur-md border border-slate-700/80 shadow-2xl font-mono text-xs text-white">
+            <TrendingDown
+              className={`w-4 h-4 ${
+                currentSlopeInfo.dangerLevel === 'EXTREME'
+                  ? 'text-red-400 animate-bounce'
+                  : currentSlopeInfo.dangerLevel === 'STEEP'
+                  ? 'text-orange-400'
+                  : 'text-emerald-400'
+              }`}
+            />
+            <div className="flex items-center gap-1.5">
+              <span className="text-slate-400">Kemiringan Medan:</span>
+              <span
+                className={`font-bold ${
+                  currentSlopeInfo.dangerLevel === 'EXTREME'
+                    ? 'text-red-400'
+                    : currentSlopeInfo.dangerLevel === 'STEEP'
+                    ? 'text-orange-400'
+                    : 'text-emerald-400'
+                }`}
+              >
+                {currentSlopeInfo.slope}°
+              </span>
+              <span className="text-[10px] text-slate-400">({currentSlopeInfo.elev}m)</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                const centerLat = userLocation?.lat || (mapInstanceRef.current ? mapInstanceRef.current.getCenter().lat : -7.5583);
+                const centerLng = userLocation?.lng || (mapInstanceRef.current ? mapInstanceRef.current.getCenter().lng : 112.3811);
+                setTerrain3DCenter({
+                  lat: centerLat,
+                  lng: centerLng,
+                  title: 'Analisis Kemiringan Lereng 3D',
+                });
+                setIsTerrain3DModalOpen(true);
+              }}
+              className="ml-1 px-2.5 py-0.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold shadow active:scale-95 transition-all"
+            >
+              Buka 3D
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 3D Terrain Analysis Modal */}
+      <Terrain3DAnalysisModal
+        isOpen={isTerrain3DModalOpen}
+        onClose={() => setIsTerrain3DModalOpen(false)}
+        centerLocation={terrain3DCenter}
+        userLocation={userLocation}
+        findings={findings}
+        historicalSites={HISTORICAL_MARKERS_DATA}
+        onFlyToLocation={(lat, lng) => {
+          if (mapInstanceRef.current) {
+            mapInstanceRef.current.flyTo([lat, lng], 17, { duration: 1.2 });
+          }
+        }}
+      />
+
+      {/* Historical Markers Explorer Modal */}
+      <HistoricalMarkersModal
+        isOpen={isHistoricalMarkersModalOpen}
+        onClose={() => setIsHistoricalMarkersModalOpen(false)}
+        userLocation={userLocation}
+        onSelectSiteOnMap={(site) => {
+          if (mapInstanceRef.current) {
+            mapInstanceRef.current.flyTo([site.lat, site.lng], 16, { duration: 1.2 });
+          }
+        }}
+        onOpen3DTerrainAnalysis={(site) => {
+          setTerrain3DCenter({
+            lat: site.lat,
+            lng: site.lng,
+            title: site.name,
+          });
+          setIsTerrain3DModalOpen(true);
         }}
       />
 

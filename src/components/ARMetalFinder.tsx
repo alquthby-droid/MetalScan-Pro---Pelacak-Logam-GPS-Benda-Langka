@@ -12,6 +12,9 @@ import {
   Layers,
   Info,
   RefreshCw,
+  LocateFixed,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 
 interface ARMetalFinderProps {
@@ -34,6 +37,26 @@ interface ARTarget {
   color: string;
   symbol: string;
 }
+
+interface ARCardinalPoint {
+  id: string;
+  code: string;
+  label: string;
+  degrees: number;
+  color: string;
+  isPrimary: boolean;
+}
+
+const CARDINALS: ARCardinalPoint[] = [
+  { id: 'card-n', code: 'N', label: 'UTARA', degrees: 0, color: '#ef4444', isPrimary: true },
+  { id: 'card-ne', code: 'NE', label: 'TIMUR LAUT', degrees: 45, color: '#38bdf8', isPrimary: false },
+  { id: 'card-e', code: 'E', label: 'TIMUR', degrees: 90, color: '#06b6d4', isPrimary: true },
+  { id: 'card-se', code: 'SE', label: 'TENGGARA', degrees: 135, color: '#38bdf8', isPrimary: false },
+  { id: 'card-s', code: 'S', label: 'SELATAN', degrees: 180, color: '#f59e0b', isPrimary: true },
+  { id: 'card-sw', code: 'SW', label: 'BARAT DAYA', degrees: 225, color: '#a855f7', isPrimary: false },
+  { id: 'card-w', code: 'W', label: 'BARAT', degrees: 270, color: '#c084fc', isPrimary: true },
+  { id: 'card-nw', code: 'NW', label: 'BARAT LAUT', degrees: 315, color: '#a855f7', isPrimary: false },
+];
 
 // Haversine formula to compute distance in meters between 2 coordinates
 function calculateDistanceMeters(
@@ -94,6 +117,7 @@ export const ARMetalFinder: React.FC<ARMetalFinderProps> = ({
   const [filterRadiusMeters, setFilterRadiusMeters] = useState<number>(100);
   const [selectedTarget, setSelectedTarget] = useState<ARTarget | null>(null);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+  const [showCompassOverlay, setShowCompassOverlay] = useState<boolean>(true); // AR Overlay Compass Toggle
 
   // Start Real Device Camera feed
   const startCamera = async () => {
@@ -194,7 +218,6 @@ export const ARMetalFinder: React.FC<ARMetalFinderProps> = ({
   // Compute AR Screen Targets based on GPS coordinates and device orientation
   // Horizontal Camera FOV is roughly 65 degrees
   const HORIZONTAL_FOV = 65;
-  const VERTICAL_FOV = 50;
 
   const arTargets: ARTarget[] = useMemo(() => {
     // Reference user position (fallback to first finding or standard coord if GPS not ready)
@@ -263,6 +286,31 @@ export const ARMetalFinder: React.FC<ARMetalFinderProps> = ({
       .sort((a, b) => b.distanceMeters - a.distanceMeters); // render farthest first
   }, [findings, userLocation, deviceHeading, devicePitch, filterRadiusMeters]);
 
+  // Compute AR Overlay Compass Floating Cardinal Points (North, South, East, West, etc.)
+  const floatingCardinals = useMemo(() => {
+    const halfFovX = HORIZONTAL_FOV / 2;
+    const basePitch = 70;
+    const deltaPitch = (devicePitch - basePitch) * 0.5;
+    const horizonY = Math.min(82, Math.max(20, 48 + deltaPitch));
+
+    return CARDINALS.map((card) => {
+      let deltaHeading = card.degrees - deviceHeading;
+      while (deltaHeading > 180) deltaHeading -= 360;
+      while (deltaHeading < -180) deltaHeading += 360;
+
+      const isVisibleInFOV = Math.abs(deltaHeading) <= halfFovX;
+      const screenX = 50 + (deltaHeading / halfFovX) * 45;
+
+      return {
+        ...card,
+        deltaHeading,
+        isVisibleInFOV,
+        screenX: Math.max(4, Math.min(96, screenX)),
+        screenY: card.isPrimary ? horizonY - 4 : horizonY,
+      };
+    });
+  }, [deviceHeading, devicePitch]);
+
   // Cardinal direction label for heading
   const getCardinalDirection = (deg: number) => {
     const dirs = ['U (0°)', 'TL (45°)', 'T (90°)', 'TG (135°)', 'S (180°)', 'BD (225°)', 'B (270°)', 'BL (315°)'];
@@ -270,10 +318,13 @@ export const ARMetalFinder: React.FC<ARMetalFinderProps> = ({
     return dirs[idx];
   };
 
+  // True North Alignment Check (within ±5° of 0° / 360°)
+  const isFacingNorth = deviceHeading <= 5 || deviceHeading >= 355;
+
   return (
     <div
       className={`relative w-full rounded-3xl overflow-hidden border border-slate-800 shadow-2xl bg-slate-950 transition-all ${
-        isFullscreen ? 'fixed inset-0 z-50 rounded-none h-screen' : 'h-[440px] md:h-[500px]'
+        isFullscreen ? 'fixed inset-0 z-50 rounded-none h-screen' : 'h-[450px] md:h-[520px]'
       } flex flex-col`}
     >
       {/* 1. Camera Video Element / AR Backdrop */}
@@ -298,7 +349,7 @@ export const ARMetalFinder: React.FC<ARMetalFinderProps> = ({
                 Augmented Reality (AR) Lapangan
               </h3>
               <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                Aktifkan kamera ponsel untuk melihat posisi target logam diproyeksikan secara virtual di dunia nyata sesuai arah kompas & GPS Anda.
+                Aktifkan kamera ponsel untuk melihat posisi target logam dan petunjuk arah kompas melayang (North, South, East, West) di dunia nyata secara real-time.
               </p>
             </div>
 
@@ -325,16 +376,55 @@ export const ARMetalFinder: React.FC<ARMetalFinderProps> = ({
         {/* Top AR Bar */}
         <div className="flex items-center justify-between gap-2 pointer-events-auto">
           {/* Compass Heading & Horizon Info */}
-          <div className="flex items-center gap-2 bg-slate-900/90 backdrop-blur-md px-3 py-1.5 rounded-2xl border border-slate-700/80 shadow-xl font-mono text-xs text-slate-200">
-            <Compass className="w-4 h-4 text-cyan-400 animate-spin-slow" />
+          <div
+            className={`flex items-center gap-2 backdrop-blur-md px-3 py-1.5 rounded-2xl border shadow-xl font-mono text-xs transition-colors ${
+              isFacingNorth
+                ? 'bg-red-950/90 border-red-500 text-red-200 shadow-red-950/50'
+                : 'bg-slate-900/90 border-slate-700/80 text-slate-200'
+            }`}
+          >
+            <Compass
+              className={`w-4 h-4 ${
+                isFacingNorth ? 'text-red-400 animate-spin-slow' : 'text-cyan-400'
+              }`}
+            />
             <div className="flex items-center gap-1.5">
-              <span className="font-bold text-cyan-300">{Math.round(deviceHeading)}°</span>
+              <span className={`font-bold ${isFacingNorth ? 'text-red-300' : 'text-cyan-300'}`}>
+                {Math.round(deviceHeading)}°
+              </span>
               <span className="text-[10px] text-slate-400">{getCardinalDirection(deviceHeading)}</span>
             </div>
+            {isFacingNorth && (
+              <span className="text-[9px] px-1.5 py-0.2 rounded bg-red-500/30 text-red-300 border border-red-400/50 font-bold uppercase animate-pulse">
+                UTARA
+              </span>
+            )}
           </div>
 
           {/* Quick AR Controls */}
           <div className="flex items-center gap-2">
+            {/* AR Overlay Compass Toggle Button */}
+            <button
+              type="button"
+              onClick={() => setShowCompassOverlay(!showCompassOverlay)}
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-2xl backdrop-blur-md border text-xs font-mono font-bold transition-all shadow-lg active:scale-95 ${
+                showCompassOverlay
+                  ? 'bg-cyan-500/25 border-cyan-400 text-cyan-200 shadow-cyan-950/40'
+                  : 'bg-slate-900/90 border-slate-700/80 text-slate-400 hover:text-slate-200'
+              }`}
+              title="Aktifkan/Nonaktifkan AR Overlay Compass (Petunjuk Arah Melayang N, S, E, W)"
+            >
+              <Compass className={`w-3.5 h-3.5 ${showCompassOverlay ? 'text-cyan-400' : 'text-slate-400'}`} />
+              <span className="hidden sm:inline">AR Kompas</span>
+              <span
+                className={`text-[9px] px-1 py-0.2 rounded font-mono ${
+                  showCompassOverlay ? 'bg-cyan-400 text-slate-950' : 'bg-slate-800 text-slate-400'
+                }`}
+              >
+                {showCompassOverlay ? 'ON' : 'OFF'}
+              </span>
+            </button>
+
             {/* Filter Radius Slider Selector */}
             <div className="bg-slate-900/90 backdrop-blur-md px-2.5 py-1 rounded-2xl border border-slate-700/80 shadow-xl font-mono text-[11px] text-slate-300 flex items-center gap-1.5">
               <Layers className="w-3.5 h-3.5 text-amber-400" />
@@ -391,16 +481,110 @@ export const ARMetalFinder: React.FC<ARMetalFinderProps> = ({
           <Crosshair className="absolute w-8 h-8 text-cyan-400" />
         </div>
 
-        {/* Compass Horizon Ribbon at top */}
-        <div className="absolute top-14 left-1/2 -translate-x-1/2 pointer-events-none flex items-center gap-4 text-[10px] font-mono text-cyan-300/80 bg-slate-950/60 backdrop-blur-md px-4 py-0.5 rounded-full border border-cyan-500/20">
-          <span>{((deviceHeading - 30 + 360) % 360).toFixed(0)}°</span>
-          <span className="w-1 h-1 rounded-full bg-cyan-400" />
-          <span className="font-bold text-cyan-200">{Math.round(deviceHeading)}°</span>
-          <span className="w-1 h-1 rounded-full bg-cyan-400" />
-          <span>{((deviceHeading + 30) % 360).toFixed(0)}°</span>
-        </div>
+        {/* Panoramic Compass Horizon Tape at top */}
+        {showCompassOverlay && (
+          <div className="absolute top-14 left-1/2 -translate-x-1/2 pointer-events-none flex flex-col items-center">
+            {/* Sliding Horizon Degrees Tape */}
+            <div className="flex items-center gap-3 text-[10px] font-mono text-cyan-300/80 bg-slate-950/75 backdrop-blur-md px-4 py-1 rounded-full border border-cyan-500/30 shadow-lg">
+              <span className="text-slate-400">{((deviceHeading - 45 + 360) % 360).toFixed(0)}°</span>
+              <span className="text-slate-400">{((deviceHeading - 20 + 360) % 360).toFixed(0)}°</span>
+              <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping" />
+              <div className="flex items-center gap-1 font-bold text-white bg-cyan-500/20 px-2 py-0.2 rounded border border-cyan-400/50">
+                <span className={isFacingNorth ? 'text-red-400 font-black' : 'text-cyan-300'}>
+                  {Math.round(deviceHeading)}°
+                </span>
+                <span className="text-[9px] text-slate-300">
+                  {getCardinalDirection(deviceHeading).split(' ')[0]}
+                </span>
+              </div>
+              <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping" />
+              <span className="text-slate-400">{((deviceHeading + 20) % 360).toFixed(0)}°</span>
+              <span className="text-slate-400">{((deviceHeading + 45) % 360).toFixed(0)}°</span>
+            </div>
 
-        {/* 3. 3D AR Spatial Floating Markers */}
+            {/* True North Alignment Callout */}
+            {isFacingNorth && (
+              <div className="mt-1 px-2.5 py-0.5 rounded-full bg-red-600/80 text-white font-mono text-[9px] font-bold border border-red-400 shadow-lg shadow-red-950/80 animate-pulse">
+                ★ MENGAHADAP UTARA TEPAT (TRUE NORTH) ★
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* 3. AR OVERLAY COMPASS: Floating 3D Cardinal Poles (N, S, E, W) */}
+        {showCompassOverlay && (
+          <div className="absolute inset-0 pointer-events-none overflow-hidden">
+            {floatingCardinals.map((card) => {
+              if (!card.isVisibleInFOV) return null;
+
+              const isNorth = card.code === 'N';
+
+              return (
+                <div
+                  key={card.id}
+                  style={{
+                    position: 'absolute',
+                    left: `${card.screenX}%`,
+                    top: `${card.screenY}%`,
+                    transform: 'translate(-50%, -50%)',
+                  }}
+                  className="pointer-events-none flex flex-col items-center transition-all duration-100 animate-in fade-in"
+                >
+                  {/* Floating 3D Cardinal Badge */}
+                  <div
+                    className={`flex items-center gap-1.5 px-3 py-1 rounded-2xl backdrop-blur-md border shadow-2xl transition-all ${
+                      isNorth
+                        ? 'bg-red-950/90 border-red-500 text-red-100 ring-2 ring-red-500/40 shadow-red-950/80 scale-110'
+                        : card.isPrimary
+                        ? 'bg-slate-950/90 border-slate-700 text-slate-100'
+                        : 'bg-slate-950/70 border-slate-800 text-slate-300'
+                    }`}
+                    style={{ borderColor: card.color }}
+                  >
+                    {/* Glowing Cardinal Orb */}
+                    <div
+                      className="w-5 h-5 rounded-full flex items-center justify-center font-black text-[11px] shadow-md shrink-0"
+                      style={{
+                        backgroundColor: card.color,
+                        color: isNorth ? '#ffffff' : '#000000',
+                        boxShadow: `0 0 10px ${card.color}aa`,
+                      }}
+                    >
+                      {card.code}
+                    </div>
+
+                    <div className="flex flex-col font-mono text-left leading-tight">
+                      <span className="text-[10px] font-black tracking-wider flex items-center gap-1">
+                        <span style={{ color: card.color }}>{card.label}</span>
+                        <span className="text-[9px] text-slate-400 font-normal">({card.degrees}°)</span>
+                      </span>
+                      {card.isPrimary && (
+                        <span className="text-[8px] text-slate-400 uppercase">
+                          {isNorth ? 'Arah Acuan Magnetik' : 'Titik Kardinal Utama'}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Vertical Horizon Laser Line down to ground */}
+                  <div
+                    className="w-0.5 h-12 opacity-80"
+                    style={{
+                      backgroundColor: card.color,
+                      boxShadow: `0 0 8px ${card.color}`,
+                    }}
+                  />
+                  <div
+                    className="w-2 h-2 rounded-full border border-white"
+                    style={{ backgroundColor: card.color }}
+                  />
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* 4. 3D AR Spatial Floating Target Markers */}
         <div className="absolute inset-0 pointer-events-none overflow-hidden">
           {arTargets.map((target) => {
             const isSelected = selectedTarget?.id === target.id;
@@ -546,15 +730,23 @@ export const ARMetalFinder: React.FC<ARMetalFinderProps> = ({
             <strong className="text-amber-400">{currentMagneticStrength.toFixed(1)} µT</strong>
           </div>
 
-          {/* AR Target Count in view */}
-          <div className="bg-slate-900/90 backdrop-blur-md px-3 py-1 rounded-2xl border border-slate-700/80 shadow-xl font-mono text-[11px] text-slate-300 flex items-center gap-1.5">
-            <Sparkles className="w-3.5 h-3.5 text-yellow-400" />
-            <span>
-              {arTargets.filter((t) => t.isVisibleInFOV).length} / {arTargets.length} Dalam Bidik Kamera
-            </span>
+          {/* AR Target Count & Compass Status in view */}
+          <div className="bg-slate-900/90 backdrop-blur-md px-3 py-1 rounded-2xl border border-slate-700/80 shadow-xl font-mono text-[11px] text-slate-300 flex items-center gap-2">
+            <div className="flex items-center gap-1">
+              <Sparkles className="w-3.5 h-3.5 text-yellow-400" />
+              <span>
+                {arTargets.filter((t) => t.isVisibleInFOV).length} / {arTargets.length} Bidik
+              </span>
+            </div>
+            {showCompassOverlay && (
+              <span className="hidden sm:inline text-cyan-400 text-[10px]">
+                • Kompas Aktif
+              </span>
+            )}
           </div>
         </div>
       </div>
     </div>
   );
 };
+

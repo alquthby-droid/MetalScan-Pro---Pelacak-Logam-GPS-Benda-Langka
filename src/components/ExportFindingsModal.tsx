@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { MetalFinding, GPSLocation } from '../types/detector';
 import { exportFindingsToCSV, exportFindingsToPDF, generateMapSnapshot } from '../services/exportService';
+import { trailService, TrailSummary } from '../services/trailService';
 import {
   Download,
   FileSpreadsheet,
@@ -14,6 +15,8 @@ import {
   User,
   Compass,
   Eye,
+  Route,
+  Navigation,
 } from 'lucide-react';
 
 interface ExportFindingsModalProps {
@@ -30,19 +33,21 @@ export const ExportFindingsModal: React.FC<ExportFindingsModalProps> = ({
   userLocation,
 }) => {
   const [surveyorName, setSurveyorName] = useState<string>('Prospector / Surveyor Lapangan');
-  const [areaLocation, setAreaLocation] = useState<string>('Sektor Prospeksi Logam & Relik');
+  const [areaLocation, setAreaLocation] = useState<string>('Sektor Eksplorasi Logam & Relik');
   const [isExportingPDF, setIsExportingPDF] = useState<boolean>(false);
   const [isExportingCSV, setIsExportingCSV] = useState<boolean>(false);
   const [mapPreviewUrl, setMapPreviewUrl] = useState<string | null>(null);
   const [isLoadingPreview, setIsLoadingPreview] = useState<boolean>(false);
   const [exportSuccessMsg, setExportSuccessMsg] = useState<string | null>(null);
+  const [trailSummary, setTrailSummary] = useState<TrailSummary>(() => trailService.getSummary());
 
-  // Generate a live preview of the map snapshot when opening the modal
+  // Generate a live preview of the map snapshot with travel route when opening the modal
   useEffect(() => {
     if (!isOpen || findings.length === 0) return;
 
     let isMounted = true;
     setIsLoadingPreview(true);
+    setTrailSummary(trailService.getSummary());
 
     generateMapSnapshot(findings, userLocation, 720, 420)
       .then((dataUrl) => {
@@ -81,11 +86,11 @@ export const ExportFindingsModal: React.FC<ExportFindingsModalProps> = ({
     setIsExportingPDF(true);
     try {
       await exportFindingsToPDF(findings, userLocation, {
-        surveyTitle: 'LAPORAN SURVEI LOGAM & ANOMALI MAGNETIK',
+        surveyTitle: 'LAPORAN HASIL SURVEI EKSPLORASI LOGAM & ARTEFAK',
         surveyorName,
         areaLocation,
       });
-      setExportSuccessMsg('Dokumen PDF Lengkap Peta berhasil dibuat dan diunduh!');
+      setExportSuccessMsg('Laporan PDF Profesional (Statistik, Peta Rute & Tabel GPS) berhasil dibuat dan diunduh!');
       setTimeout(() => setExportSuccessMsg(null), 4500);
     } catch (err) {
       console.error(err);
@@ -116,7 +121,7 @@ export const ExportFindingsModal: React.FC<ExportFindingsModalProps> = ({
                 </span>
               </h2>
               <p className="text-xs text-slate-400">
-                Unduh CSV spreadsheet lengkap atau Dokumen PDF resmi beserta peta sebaran GPS
+                Format CSV spreadsheet atau Laporan PDF Profesional lengkap peta rute & koordinat GPS
               </p>
             </div>
           </div>
@@ -139,32 +144,138 @@ export const ExportFindingsModal: React.FC<ExportFindingsModalProps> = ({
             </div>
           )}
 
-          {/* Quick Metrics Bar */}
-          <div className="grid grid-cols-3 gap-2 bg-slate-950/60 p-3 rounded-2xl border border-slate-800/80 font-mono text-center">
+          {/* Quick Metrics Bar: Findings & Route Stats */}
+          <div className="grid grid-cols-4 gap-1.5 bg-slate-950/60 p-2.5 rounded-2xl border border-slate-800/80 font-mono text-center">
             <div>
-              <div className="text-[10px] text-slate-500 uppercase">Total Data</div>
-              <div className="text-sm font-bold text-slate-200 mt-0.5">{findings.length} Titik</div>
+              <div className="text-[9px] text-slate-500 uppercase">Temuan</div>
+              <div className="text-xs sm:text-sm font-bold text-slate-200 mt-0.5">{findings.length} Titik</div>
             </div>
             <div>
-              <div className="text-[10px] text-amber-400/80 uppercase">Fluks Puncak</div>
-              <div className="text-sm font-bold text-amber-400 mt-0.5">{highestFlux.toFixed(1)} µT</div>
+              <div className="text-[9px] text-amber-400/80 uppercase">Fluks Puncak</div>
+              <div className="text-xs sm:text-sm font-bold text-amber-400 mt-0.5">{highestFlux.toFixed(1)} µT</div>
             </div>
             <div>
-              <div className="text-[10px] text-yellow-400/80 uppercase">Emas / Meteorit</div>
-              <div className="text-sm font-bold text-yellow-300 mt-0.5">{goldCount + meteoriteCount} Sasaran</div>
+              <div className="text-[9px] text-yellow-400/80 uppercase">Emas/Meteorit</div>
+              <div className="text-xs sm:text-sm font-bold text-yellow-300 mt-0.5">{goldCount + meteoriteCount} Item</div>
+            </div>
+            <div>
+              <div className="text-[9px] text-cyan-400/80 uppercase">Rute Jelajah</div>
+              <div className="text-xs sm:text-sm font-bold text-cyan-300 mt-0.5">
+                {trailSummary.totalDistanceMeters >= 1000
+                  ? `${(trailSummary.totalDistanceMeters / 1000).toFixed(1)}km`
+                  : `${Math.round(trailSummary.totalDistanceMeters)}m`}
+              </div>
             </div>
           </div>
 
-          {/* Option 1: CSV Export Card */}
+          {/* Option 1: Professional PDF Report with Map Snapshot & Travel Route */}
+          <div className="bg-slate-950/90 border border-indigo-500/50 rounded-2xl p-4 space-y-3 shadow-lg shadow-indigo-950/20 hover:border-indigo-500/70 transition-all">
+            <div className="flex items-start justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2.5 rounded-xl bg-indigo-500/20 text-indigo-300 border border-indigo-500/40">
+                  <FileText className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-100 flex items-center gap-1.5 flex-wrap">
+                    <span>Laporan PDF Profesional</span>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-indigo-500/30 text-indigo-200 border border-indigo-400/40 font-bold uppercase">
+                      Statistik • Peta Rute • Tabel GPS
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Dokumen resmi A4 siap cetak memuat ringkasan statistik temuan, peta visual rute perjalanan GPS, nomor pin, dan daftar koordinat GPS dalam tabel rapi.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Custom report metadata fields */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs font-mono pt-1">
+              <div className="space-y-1">
+                <label className="text-slate-400 text-[11px] flex items-center gap-1">
+                  <User className="w-3 h-3 text-cyan-400" />
+                  <span>Nama Surveyor / Petugas:</span>
+                </label>
+                <input
+                  type="text"
+                  value={surveyorName}
+                  onChange={(e) => setSurveyorName(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-slate-400 text-[11px] flex items-center gap-1">
+                  <Compass className="w-3 h-3 text-amber-400" />
+                  <span>Lokasi / Nama Sektor Survei:</span>
+                </label>
+                <input
+                  type="text"
+                  value={areaLocation}
+                  onChange={(e) => setAreaLocation(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+            </div>
+
+            {/* Map Preview Snapshot with Travel Route */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between text-xs font-mono text-slate-400">
+                <span className="flex items-center gap-1">
+                  <Route className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>Pratinjau Peta Rute Perjalanan & Titik GPS:</span>
+                </span>
+                <span className="text-[10px] text-cyan-300/80">Jalur Rute GPS • Arah Utara • Grid Lintang/Bujur</span>
+              </div>
+
+              <div className="relative w-full h-36 bg-slate-900 rounded-xl border border-slate-800 overflow-hidden flex items-center justify-center">
+                {isLoadingPreview ? (
+                  <div className="flex items-center gap-2 text-xs font-mono text-slate-400">
+                    <Loader2 className="w-4 h-4 animate-spin text-cyan-400" />
+                    <span>Menyusun Peta Rute Geografis...</span>
+                  </div>
+                ) : mapPreviewUrl ? (
+                  <img
+                    src={mapPreviewUrl}
+                    alt="Pratinjau Peta Rute Snapshot PDF"
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <span className="text-xs text-slate-500 font-mono">Belum ada titik data</span>
+                )}
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleExportPDF}
+              disabled={isExportingPDF || findings.length === 0}
+              className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-gradient-to-r from-indigo-600 via-blue-600 to-cyan-600 hover:from-indigo-500 hover:to-cyan-500 text-white font-mono font-bold text-xs shadow-lg shadow-indigo-950/50 active:scale-98 transition-all disabled:opacity-50"
+            >
+              {isExportingPDF ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Sedang Menyusun Laporan PDF Profesional...</span>
+                </>
+              ) : (
+                <>
+                  <FileText className="w-4 h-4" />
+                  <span>Unduh Laporan PDF Profesional (.pdf)</span>
+                </>
+              )}
+            </button>
+          </div>
+
+          {/* Option 2: CSV Spreadsheet Export Card */}
           <div className="bg-slate-950/80 border border-teal-500/30 rounded-2xl p-4 space-y-3 hover:border-teal-500/50 transition-all">
             <div className="flex items-start justify-between">
               <div className="flex items-center gap-2.5">
-                <div className="p-2 rounded-xl bg-teal-500/20 text-teal-400 border border-teal-500/30">
+                <div className="p-2.5 rounded-xl bg-teal-500/20 text-teal-400 border border-teal-500/30">
                   <FileSpreadsheet className="w-5 h-5" />
                 </div>
                 <div>
                   <h3 className="text-sm font-bold text-slate-100 flex items-center gap-1.5">
-                    <span>Ekspor Format CSV</span>
+                    <span>Ekspor Format CSV Spreadsheet</span>
                     <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-teal-500/20 text-teal-300">
                       .csv
                     </span>
@@ -179,7 +290,7 @@ export const ExportFindingsModal: React.FC<ExportFindingsModalProps> = ({
             <div className="text-[11px] font-mono text-slate-400 bg-slate-900/90 p-2.5 rounded-xl border border-slate-800 space-y-1">
               <div className="text-slate-300 font-semibold">Kolom yang disertakan:</div>
               <p className="text-[10px] leading-relaxed text-slate-400">
-                ID, Timestamp ISO, Tanggal & Jam Lokal, Latitude & Longitude presisi 6 desimal, Akurasi GPS (m), Fluks Total (µT), Net Anomali, Kategori Logam, Nama Temuan, Kedalaman (cm), Tipe Perekaman, Tautan Google Maps, & Catatan Lapangan.
+                ID, Timestamp ISO, Tanggal & Jam Lokal, Latitude & Longitude presisi 6 desimal, Nama Landmark/Lokasi, Akurasi GPS, Fluks Total & Net, Kategori Logam, Nama Temuan, Kedalaman (cm), Tipe Perekaman, & Catatan Lapangan.
               </p>
             </div>
 
@@ -198,104 +309,6 @@ export const ExportFindingsModal: React.FC<ExportFindingsModalProps> = ({
                 <>
                   <FileSpreadsheet className="w-4 h-4" />
                   <span>Unduh File CSV (.csv)</span>
-                </>
-              )}
-            </button>
-          </div>
-
-          {/* Option 2: Full PDF Report with Map Snapshot */}
-          <div className="bg-slate-950/80 border border-indigo-500/40 rounded-2xl p-4 space-y-3 hover:border-indigo-500/60 transition-all">
-            <div className="flex items-start justify-between">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 rounded-xl bg-indigo-500/20 text-indigo-400 border border-indigo-500/30">
-                  <FileText className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-bold text-slate-100 flex items-center gap-1.5">
-                    <span>Laporan Resmi PDF Lengkap Peta</span>
-                    <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-indigo-500/20 text-indigo-300 font-bold">
-                      .pdf
-                    </span>
-                  </h3>
-                  <p className="text-xs text-slate-400">
-                    Dokumen A4 siap cetak memuat peta visual GPS, kontur intensitas anomali, nomor pin, dan tabel data lengkap.
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            {/* Custom report metadata fields */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs font-mono">
-              <div className="space-y-1">
-                <label className="text-slate-400 text-[11px] flex items-center gap-1">
-                  <User className="w-3 h-3 text-cyan-400" />
-                  <span>Nama Surveyor / Petugas:</span>
-                </label>
-                <input
-                  type="text"
-                  value={surveyorName}
-                  onChange={(e) => setSurveyorName(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-slate-400 text-[11px] flex items-center gap-1">
-                  <Compass className="w-3 h-3 text-amber-400" />
-                  <span>Lokasi / Nama Area Survei:</span>
-                </label>
-                <input
-                  type="text"
-                  value={areaLocation}
-                  onChange={(e) => setAreaLocation(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
-                />
-              </div>
-            </div>
-
-            {/* Map Preview Snapshot */}
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between text-xs font-mono text-slate-400">
-                <span className="flex items-center gap-1">
-                  <Eye className="w-3 h-3 text-cyan-400" />
-                  <span>Pratinjau Snapshot Peta di PDF:</span>
-                </span>
-                <span className="text-[10px] text-slate-500">Resolusi Tinggi • Grid Koordinat & Arah Utara</span>
-              </div>
-
-              <div className="relative w-full h-36 bg-slate-900 rounded-xl border border-slate-800 overflow-hidden flex items-center justify-center">
-                {isLoadingPreview ? (
-                  <div className="flex items-center gap-2 text-xs font-mono text-slate-400">
-                    <Loader2 className="w-4 h-4 animate-spin text-cyan-400" />
-                    <span>Membuat Peta Geografis...</span>
-                  </div>
-                ) : mapPreviewUrl ? (
-                  <img
-                    src={mapPreviewUrl}
-                    alt="Pratinjau Peta Snapshot PDF"
-                    className="w-full h-full object-cover"
-                  />
-                ) : (
-                  <span className="text-xs text-slate-500 font-mono">Belum ada titik data</span>
-                )}
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={handleExportPDF}
-              disabled={isExportingPDF || findings.length === 0}
-              className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white font-mono font-bold text-xs shadow-lg shadow-indigo-950/50 active:scale-98 transition-all disabled:opacity-50"
-            >
-              {isExportingPDF ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Sedang Menyusun Dokumen PDF & Peta...</span>
-                </>
-              ) : (
-                <>
-                  <FileText className="w-4 h-4" />
-                  <span>Unduh Laporan PDF Lengkap Peta (.pdf)</span>
                 </>
               )}
             </button>

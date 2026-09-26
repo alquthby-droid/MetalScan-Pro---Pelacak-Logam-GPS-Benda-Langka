@@ -1,6 +1,7 @@
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { MetalFinding, GPSLocation, MetalCategory } from '../types/detector';
+import { trailService, TrailPoint } from './trailService';
 
 /**
  * Calculates distance between two GPS coordinates in meters using the Haversine formula
@@ -21,13 +22,14 @@ function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: numbe
 }
 
 /**
- * Generate a high-resolution canvas map snapshot of all findings and GPS bounds
+ * Generate a high-resolution canvas map snapshot of all findings, GPS travel route, and GPS bounds
  */
 export async function generateMapSnapshot(
   findings: MetalFinding[],
   userLocation?: GPSLocation | null,
   width: number = 900,
-  height: number = 520
+  height: number = 520,
+  trailPointsOverride?: TrailPoint[]
 ): Promise<string> {
   const canvas = document.createElement('canvas');
   canvas.width = width;
@@ -35,11 +37,17 @@ export async function generateMapSnapshot(
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Canvas 2D context not available');
 
-  // Determine GPS bounding box
+  // Fetch travel route trail points from trailService if not explicitly provided
+  const trail = trailPointsOverride || trailService.getPoints();
+
+  // Determine comprehensive GPS bounding box across findings, user location, and travel trail
   const allPoints: { lat: number; lng: number }[] = findings.map((f) => ({ lat: f.lat, lng: f.lng }));
   if (userLocation) {
     allPoints.push({ lat: userLocation.lat, lng: userLocation.lng });
   }
+  trail.forEach((tp) => {
+    allPoints.push({ lat: tp.lat, lng: tp.lng });
+  });
 
   // Fallback defaults if no points
   if (allPoints.length === 0) {
@@ -51,9 +59,9 @@ export async function generateMapSnapshot(
   let minLng = Math.min(...allPoints.map((p) => p.lng));
   let maxLng = Math.max(...allPoints.map((p) => p.lng));
 
-  // Add margin around bounding box (at least 0.0015 deg ~ 160m if clustered)
-  const latSpan = Math.max(maxLat - minLat, 0.0018);
-  const lngSpan = Math.max(maxLng - minLng, 0.0022);
+  // Add margin around bounding box (at least 0.0018 deg ~ 200m if clustered)
+  const latSpan = Math.max(maxLat - minLat, 0.002);
+  const lngSpan = Math.max(maxLng - minLng, 0.0024);
   const latPad = latSpan * 0.22;
   const lngPad = lngSpan * 0.22;
 
@@ -62,7 +70,7 @@ export async function generateMapSnapshot(
   minLng -= lngPad;
   maxLng += lngPad;
 
-  // Projection helper: lat/lng -> canvas x, y (with 35px padding for axes)
+  // Projection helper: lat/lng -> canvas x, y (with 45px padding for axes)
   const padX = 45;
   const padY = 40;
   const mapW = width - padX * 2;
@@ -158,10 +166,71 @@ export async function generateMapSnapshot(
     ctx.fill();
   });
 
-  // 5. Connecting Survey Path / Track (if multiple findings)
-  if (findings.length > 1) {
+  // 5. DRAW ACTUAL TRAVEL ROUTE / GPS TRAJECTORY (Peta Rute Perjalanan GPS)
+  if (trail.length > 1) {
     ctx.save();
-    ctx.strokeStyle = 'rgba(56, 189, 248, 0.3)';
+    // Glowing ambient path underneath
+    ctx.strokeStyle = 'rgba(6, 182, 212, 0.35)';
+    ctx.lineWidth = 4;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    trail.forEach((p, idx) => {
+      const px = toX(p.lng);
+      const py = toY(p.lat);
+      if (idx === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    });
+    ctx.stroke();
+
+    // Foreground tactical dash path
+    ctx.strokeStyle = '#22d3ee';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    trail.forEach((p, idx) => {
+      const px = toX(p.lng);
+      const py = toY(p.lat);
+      if (idx === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    });
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Checkpoints / Breadcrumb dots along path
+    trail.forEach((p, idx) => {
+      if (idx > 0 && idx < trail.length - 1 && idx % 3 === 0) {
+        const px = toX(p.lng);
+        const py = toY(p.lat);
+        ctx.fillStyle = p.isAnomaly ? '#f59e0b' : '#38bdf8';
+        ctx.beginPath();
+        ctx.arc(px, py, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    });
+
+    // Start point marker (TITIK AWAL RUTE)
+    const startPoint = trail[0];
+    const sx = toX(startPoint.lng);
+    const sy = toY(startPoint.lat);
+    ctx.fillStyle = '#10b981'; // emerald
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(sx, sy, 7, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // Start label
+    ctx.font = 'bold 8.5px "JetBrains Mono", sans-serif';
+    ctx.fillStyle = '#10b981';
+    ctx.textAlign = 'center';
+    ctx.fillText('START', sx, sy + 15);
+    ctx.restore();
+  } else if (findings.length > 1) {
+    // Fallback: Connect findings if no trail recorded yet
+    ctx.save();
+    ctx.strokeStyle = 'rgba(56, 189, 248, 0.4)';
     ctx.lineWidth = 1.5;
     ctx.setLineDash([4, 4]);
     ctx.beginPath();
@@ -175,7 +244,7 @@ export async function generateMapSnapshot(
     ctx.restore();
   }
 
-  // 6. Draw User Location Pin & Accuracy Circle (if available)
+  // 6. Draw User Location Pin & Accuracy Circle (POSISI SURVEYOR)
   if (userLocation) {
     const ux = toX(userLocation.lng);
     const uy = toY(userLocation.lat);
@@ -186,7 +255,7 @@ export async function generateMapSnapshot(
     ctx.strokeStyle = 'rgba(56, 189, 248, 0.6)';
     ctx.lineWidth = 1.5;
     ctx.beginPath();
-    ctx.arc(ux, uy, 24, 0, Math.PI * 2);
+    ctx.arc(ux, uy, 22, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
 
@@ -214,23 +283,18 @@ export async function generateMapSnapshot(
     const pinNumber = index + 1;
 
     let pinColor = '#94a3b8'; // iron
-    let symbol = '⛏';
     let textColor = '#ffffff';
     if (f.category === 'gold') {
       pinColor = '#eab308';
-      symbol = '★';
       textColor = '#000000';
     } else if (f.category === 'meteorite') {
       pinColor = '#c084fc';
-      symbol = '☄';
       textColor = '#000000';
     } else if (f.category === 'silver') {
       pinColor = '#38bdf8';
-      symbol = '◈';
       textColor = '#000000';
     } else if (f.category === 'bronze') {
       pinColor = '#f97316';
-      symbol = '⬢';
       textColor = '#000000';
     }
 
@@ -258,7 +322,7 @@ export async function generateMapSnapshot(
     ctx.closePath();
     ctx.fill();
 
-    // Pin Number / Symbol
+    // Pin Number
     ctx.shadowBlur = 0;
     ctx.shadowOffsetY = 0;
     ctx.fillStyle = textColor;
@@ -355,10 +419,14 @@ export async function generateMapSnapshot(
   ctx.fillStyle = '#cbd5e1';
   ctx.font = '9px "JetBrains Mono", sans-serif';
   ctx.textAlign = 'center';
-  ctx.fillText(`${scaleBarMeters >= 1000 ? (scaleBarMeters / 1000).toFixed(1) + ' km' : scaleBarMeters + ' m'}`, scaleX + scaleBarPixels / 2, scaleY - 4);
+  ctx.fillText(
+    `${scaleBarMeters >= 1000 ? (scaleBarMeters / 1000).toFixed(1) + ' km' : scaleBarMeters + ' m'}`,
+    scaleX + scaleBarPixels / 2,
+    scaleY - 4
+  );
   ctx.restore();
 
-  // 10. Bottom Category Legend Strip
+  // 10. Bottom Category & Route Legend Strip
   ctx.save();
   const legendY = height - 22;
   ctx.fillStyle = '#0f172a';
@@ -376,22 +444,23 @@ export async function generateMapSnapshot(
     { label: '◈ Perak', color: '#38bdf8' },
     { label: '⬢ Perunggu', color: '#f97316' },
     { label: '⛏ Besi/Ferrous', color: '#94a3b8' },
-    { label: '● Titik Surveyor GPS', color: '#0284c7' },
+    { label: '― Rute GPS', color: '#22d3ee' },
+    { label: '● Titik Surveyor', color: '#0284c7' },
   ];
 
   ctx.font = '10px "JetBrains Mono", sans-serif';
-  let curLegX = 30;
+  let curLegX = 24;
   legends.forEach((leg) => {
     ctx.fillStyle = leg.color;
     ctx.beginPath();
-    ctx.arc(curLegX + 6, legendY, 5, 0, Math.PI * 2);
+    ctx.arc(curLegX + 5, legendY, 4.5, 0, Math.PI * 2);
     ctx.fill();
 
     ctx.fillStyle = '#cbd5e1';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    ctx.fillText(leg.label, curLegX + 16, legendY);
-    curLegX += ctx.measureText(leg.label).width + 36;
+    ctx.fillText(leg.label, curLegX + 13, legendY);
+    curLegX += ctx.measureText(leg.label).width + 24;
   });
   ctx.restore();
 
@@ -420,6 +489,7 @@ export function exportFindingsToCSV(findings: MetalFinding[], filename?: string)
     'Fluks_Net_Anomali_uT',
     'Kategori_Material',
     'Nama_Temuan',
+    'Nama_Lokasi_Landmark',
     'Estimasi_Kedalaman_cm',
     'Identifikasi_Artefak_AI',
     'Era_Historis_AI',
@@ -447,6 +517,7 @@ export function exportFindingsToCSV(findings: MetalFinding[], filename?: string)
       f.netStrength.toFixed(2),
       `"${f.category}"`,
       `"${(f.name || '').replace(/"/g, '""')}"`,
+      `"${(f.locationName || '').replace(/"/g, '""')}"`,
       f.depthEstimateCm,
       `"${(f.aiAnalysis?.artifactName || '').replace(/"/g, '""')}"`,
       `"${(f.aiAnalysis?.historicalEra || '').replace(/"/g, '""')}"`,
@@ -465,7 +536,7 @@ export function exportFindingsToCSV(findings: MetalFinding[], filename?: string)
 }
 
 /**
- * Export findings and complete geographic map snapshot to an official PDF Report
+ * Export findings, travel route map, and organized GPS table to an official 'Laporan PDF Profesional'
  */
 export async function exportFindingsToPDF(
   findings: MetalFinding[],
@@ -481,10 +552,14 @@ export async function exportFindingsToPDF(
     return;
   }
 
-  // 1. Generate High-Res Geographic Map Snapshot
-  const mapImageBase64 = await generateMapSnapshot(findings, userLocation, 900, 520);
+  // 1. Fetch Travel Route and Route Summary
+  const trail = trailService.getPoints();
+  const trailSummary = trailService.getSummary();
 
-  // 2. Initialize jsPDF Document (A4 Portrait, mm)
+  // 2. Generate High-Res Geographic Map Snapshot including Travel Route
+  const mapImageBase64 = await generateMapSnapshot(findings, userLocation, 960, 540, trail);
+
+  // 3. Initialize jsPDF Document (A4 Portrait, mm)
   const doc = new jsPDF({
     orientation: 'portrait',
     unit: 'mm',
@@ -498,125 +573,190 @@ export async function exportFindingsToPDF(
 
   // Header Banner Background (Dark Tactical Slate)
   doc.setFillColor(15, 23, 42); // #0f172a
-  doc.rect(0, 0, pageWidth, 38, 'F');
+  doc.rect(0, 0, pageWidth, 40, 'F');
 
   // Cyan Accent Line
   doc.setFillColor(6, 182, 212); // #06b6d4
-  doc.rect(0, 38, pageWidth, 1.5, 'F');
+  doc.rect(0, 40, pageWidth, 1.8, 'F');
 
-  // Brand & Report Title
+  // Brand & Official Report Title
   doc.setTextColor(255, 255, 255);
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(16);
-  doc.text('LAPORAN SURVEI LOGAM & ANOMALI MAGNETIK', margin, 15);
+  doc.setFontSize(15);
+  doc.text('LAPORAN HASIL SURVEI EKSPLORASI LOGAM & ARTEFAK', margin, 14);
 
-  doc.setFontSize(9);
+  doc.setFontSize(8.5);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(148, 163, 184); // #94a3b8
   doc.text(
-    `MetalScan Pro • GPS Magnetic Field Detection Suite | Tanggal: ${new Date().toLocaleDateString('id-ID', {
+    `MetalScan Pro • Precision Geological & Relic Field Detection Suite`,
+    margin,
+    21
+  );
+
+  doc.text(
+    `Surveyor: ${options?.surveyorName || 'Prospector / Surveyor Lapangan'} | Lokasi: ${
+      options?.areaLocation || 'Sektor Eksplorasi Geofisika'
+    } | Tanggal: ${new Date().toLocaleDateString('id-ID', {
       weekday: 'long',
       year: 'numeric',
       month: 'long',
       day: 'numeric',
     })}`,
     margin,
-    22
+    27
   );
 
   doc.text(
-    `Total Temuan: ${findings.length} Titik | Surveyor: ${options?.surveyorName || 'Petugas Lapangan'} | Area: ${options?.areaLocation || 'Survei Geofisika Lapangan'}`,
+    `Total Sasaran: ${findings.length} Titik Temuan | Panjang Rute Jelajah: ${
+      trailSummary.totalDistanceMeters >= 1000
+        ? (trailSummary.totalDistanceMeters / 1000).toFixed(2) + ' km'
+        : Math.round(trailSummary.totalDistanceMeters) + ' meter'
+    } (${Math.round(trailSummary.durationSeconds / 60)} Menit)`,
     margin,
-    28
+    33
   );
 
-  // Doc ID / Timestamp Badge
+  // Official Status Badge
   doc.setFillColor(30, 41, 59);
-  doc.roundedRect(pageWidth - margin - 45, 10, 45, 18, 2, 2, 'F');
+  doc.roundedRect(pageWidth - margin - 48, 9, 48, 22, 2, 2, 'F');
   doc.setTextColor(56, 189, 248);
   doc.setFont('courier', 'bold');
-  doc.setFontSize(8);
-  doc.text('STATUS: RESMI', pageWidth - margin - 42, 17);
+  doc.setFontSize(7.5);
+  doc.text('DOKUMEN RESMI', pageWidth - margin - 45, 16);
   doc.setTextColor(203, 213, 225);
-  doc.setFontSize(7);
-  doc.text(`NO: MSP-${Date.now().toString().slice(-6)}`, pageWidth - margin - 42, 23);
+  doc.setFontSize(6.5);
+  doc.text('LAPORAN PDF PROFESIONAL', pageWidth - margin - 45, 21);
+  doc.text(`ID: MSP-${Date.now().toString().slice(-7)}`, pageWidth - margin - 45, 26);
 
-  let currentY = 46;
+  let currentY = 48;
 
-  // Executive Summary KPI Cards (4 columns)
+  // SECTION 1: RINGKASAN STATISTIK TEMUAN & RUTE JELAJAH (6 KPI Cards)
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10.5);
+  doc.setTextColor(15, 23, 42);
+  doc.text('1. RINGKASAN STATISTIK TEMUAN & PARAMETER SURVEI', margin, currentY);
+
+  currentY += 4;
+
   const highestFlux = findings.reduce((max, f) => Math.max(max, f.magneticStrength), 0);
+  const avgFlux =
+    findings.reduce((sum, f) => sum + f.magneticStrength, 0) / (findings.length || 1);
   const goldCount = findings.filter((f) => f.category === 'gold').length;
   const meteoriteCount = findings.filter((f) => f.category === 'meteorite').length;
+  const relicCount = findings.filter((f) => f.category === 'silver' || f.category === 'bronze').length;
   const avgDepth = Math.round(
     findings.reduce((sum, f) => sum + (f.depthEstimateCm || 15), 0) / (findings.length || 1)
   );
 
-  const cardW = (contentWidth - 9) / 4;
-  const cardH = 18;
+  const cardW = (contentWidth - 10) / 3;
+  const cardH = 15;
 
-  const kpis = [
-    { label: 'TOTAL TEMUAN', val: `${findings.length} Titik`, color: [15, 23, 42], textCol: [255, 255, 255] },
-    { label: 'FLUKS TERTINGGI', val: `${highestFlux.toFixed(1)} µT`, color: [245, 158, 11], textCol: [120, 53, 15] },
-    { label: 'EMAS & METEORIT', val: `${goldCount + meteoriteCount} Sasaran`, color: [147, 51, 234], textCol: [88, 28, 135] },
-    { label: 'RATA KEDALAMAN', val: `~${avgDepth} cm`, color: [14, 165, 233], textCol: [12, 74, 110] },
+  const statsCards = [
+    {
+      label: 'TOTAL TITIK TEMUAN',
+      val: `${findings.length} Titik`,
+      sub: `Fluks Rata: ${avgFlux.toFixed(1)} µT`,
+      color: [15, 23, 42],
+    },
+    {
+      label: 'FLUKS ANOMALI PUNCAK',
+      val: `${highestFlux.toFixed(1)} µT`,
+      sub: `Ambang Auto: Aktif`,
+      color: [245, 158, 11],
+    },
+    {
+      label: 'EMAS & METEORIT',
+      val: `${goldCount + meteoriteCount} Sasaran`,
+      sub: `Relik Lainnya: ${relicCount} Titik`,
+      color: [147, 51, 234],
+    },
+    {
+      label: 'RATA KEDALAMAN TANAH',
+      val: `~${avgDepth} cm`,
+      sub: `Estimasi Sensor Lapangan`,
+      color: [14, 165, 233],
+    },
+    {
+      label: 'TOTAL JARAK JELAJAH RUTE',
+      val:
+        trailSummary.totalDistanceMeters >= 1000
+          ? `${(trailSummary.totalDistanceMeters / 1000).toFixed(2)} km`
+          : `${Math.round(trailSummary.totalDistanceMeters)} meter`,
+      sub: `GPS Track: ${trail.length} Titik`,
+      color: [16, 185, 129],
+    },
+    {
+      label: 'DURASI WAKTU SURVEI',
+      val: `${Math.max(1, Math.round(trailSummary.durationSeconds / 60))} Menit`,
+      sub: `Baseline: ~${trailSummary.baseline.toFixed(0)} µT`,
+      color: [100, 116, 139],
+    },
   ];
 
-  kpis.forEach((kpi, idx) => {
-    const kx = margin + idx * (cardW + 3);
+  statsCards.forEach((kpi, idx) => {
+    const col = idx % 3;
+    const row = Math.floor(idx / 3);
+    const kx = margin + col * (cardW + 5);
+    const ky = currentY + row * (cardH + 3);
+
     doc.setFillColor(248, 250, 252);
     doc.setDrawColor(226, 232, 240);
-    doc.roundedRect(kx, currentY, cardW, cardH, 2, 2, 'FD');
+    doc.roundedRect(kx, ky, cardW, cardH, 2, 2, 'FD');
 
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(7);
+    doc.setFontSize(6.5);
     doc.setTextColor(100, 116, 139);
-    doc.text(kpi.label, kx + 3, currentY + 5.5);
+    doc.text(kpi.label, kx + 3, ky + 4.5);
 
-    doc.setFontSize(11);
-    doc.setTextColor(kpi.textCol[0], kpi.textCol[1], kpi.textCol[2]);
-    doc.text(kpi.val, kx + 3, currentY + 13.5);
+    doc.setFontSize(10);
+    doc.setTextColor(kpi.color[0], kpi.color[1], kpi.color[2]);
+    doc.text(kpi.val, kx + 3, ky + 9.5);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(6);
+    doc.setTextColor(148, 163, 184);
+    doc.text(kpi.sub, kx + 3, ky + 13);
   });
 
-  currentY += cardH + 6;
+  currentY += cardH * 2 + 8;
 
-  // Section Header: Peta Sebaran Lokasi GPS
+  // SECTION 2: PETA RUTE PERJALANAN & SEBARAN TITIK TEMUAN (High-Res Map Snapshot)
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(11);
+  doc.setFontSize(10.5);
   doc.setTextColor(15, 23, 42);
-  doc.text('PETA SEBARAN & ANOMALI GEOGRAFIS (TACTICAL GPS SNAPSHOT)', margin, currentY);
+  doc.text('2. PETA RUTE PERJALANAN & SEBARAN TITIK TEMUAN (GPS TACTICAL MAP)', margin, currentY);
 
-  currentY += 3;
+  currentY += 3.5;
 
-  // Embed High-Res Geographic Map Snapshot Image
   const mapImageWidth = contentWidth;
-  const mapImageHeight = 100; // mm
+  const mapImageHeight = 88; // mm
 
   doc.setDrawColor(30, 41, 59);
-  doc.setLineWidth(0.5);
+  doc.setLineWidth(0.4);
   doc.rect(margin, currentY, mapImageWidth, mapImageHeight);
   doc.addImage(mapImageBase64, 'PNG', margin, currentY, mapImageWidth, mapImageHeight);
 
-  currentY += mapImageHeight + 4;
+  currentY += mapImageHeight + 3.5;
 
-  // Map Subtitle & Coordinates Boundary Notice
   doc.setFont('helvetica', 'italic');
-  doc.setFontSize(7.5);
+  doc.setFontSize(7);
   doc.setTextColor(100, 116, 139);
   doc.text(
-    '* Peta menampilkan koordinat GPS riil, kontur intensitas anomali medan magnet, arah mata angin utara (N), dan nomor pin yang sesuai dengan tabel data.',
+    '* Peta rute perjalanan di atas memvisualisasikan jalur lintasan GPS surveyor (garis biru neon), titik awal (START), nomor pin temuan, dan kontur anomali medan magnetik riil.',
     margin,
     currentY
   );
 
   currentY += 6;
 
-  // Table Section Header
+  // SECTION 3: DAFTAR KOORDINAT GPS DALAM TABEL YANG RAPI
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(11);
+  doc.setFontSize(10.5);
   doc.setTextColor(15, 23, 42);
-  doc.text('TABEL LOG DATA TITIK TEMUAN LENGKAP', margin, currentY);
+  doc.text('3. DAFTAR KOORDINAT GPS & DATA TITIK TEMUAN', margin, currentY);
 
-  currentY += 2;
+  currentY += 2.5;
 
   // Format Table Data Rows
   const tableRows = findings.map((f, idx) => {
@@ -625,26 +765,27 @@ export async function exportFindingsToPDF(
     const timeFormatted = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
     let catLabel = f.category.toUpperCase();
-    if (f.category === 'gold') catLabel = 'EMAS (GOLD)';
+    if (f.category === 'gold') catLabel = 'EMAS';
     else if (f.category === 'meteorite') catLabel = 'METEORIT';
     else if (f.category === 'silver') catLabel = 'PERAK';
     else if (f.category === 'bronze') catLabel = 'PERUNGGU';
-    else if (f.category === 'iron') catLabel = 'BESI (FERROUS)';
+    else if (f.category === 'iron') catLabel = 'BESI';
 
+    const locationText = f.locationName ? `\n📍 ${f.locationName}` : '';
     const aiText = f.aiAnalysis
-      ? `\n[Artefak AI: ${f.aiAnalysis.artifactName} (${f.aiAnalysis.historicalEra})]`
+      ? `\n[Artefak: ${f.aiAnalysis.artifactName} (${f.aiAnalysis.historicalEra})]`
       : '';
-    const noteText = f.note ? `\nCatatan: ${f.note}` : '';
 
     return [
       (idx + 1).toString(),
-      `${dateFormatted} ${timeFormatted}`,
-      `${f.name}${aiText}${noteText}`,
+      `${dateFormatted}\n${timeFormatted}`,
+      `${f.name}${locationText}${aiText}`,
       catLabel,
-      `${f.lat.toFixed(5)},\n${f.lng.toFixed(5)}`,
-      `${f.magneticStrength.toFixed(1)} µT`,
+      `${f.lat.toFixed(6)},\n${f.lng.toFixed(6)}`,
+      `${f.accuracy ? f.accuracy.toFixed(0) : '3'}m`,
+      `${f.magneticStrength.toFixed(1)} µT\n(Net: +${f.netStrength.toFixed(1)})`,
       `~${f.depthEstimateCm || 15} cm`,
-      f.autoSaved ? 'Auto-GPS' : 'Manual',
+      f.autoSaved ? 'Auto-GPS' : 'Manual Pin',
     ];
   });
 
@@ -654,10 +795,11 @@ export async function exportFindingsToPDF(
       [
         'No',
         'Waktu',
-        'Nama & Keterangan',
-        'Kategori Logam',
+        'Nama Temuan & Landmark Lokasi',
+        'Kategori',
         'Koordinat GPS',
-        'Kekuatan Fluks',
+        'Akurasi',
+        'Fluks Medan',
         'Kedalaman',
         'Metode',
       ],
@@ -668,26 +810,27 @@ export async function exportFindingsToPDF(
       fillColor: [15, 23, 42],
       textColor: [255, 255, 255],
       fontStyle: 'bold',
-      fontSize: 8,
+      fontSize: 7.5,
       halign: 'center',
     },
     styles: {
-      fontSize: 7.5,
-      cellPadding: 2.2,
+      fontSize: 7,
+      cellPadding: 2,
       textColor: [30, 41, 59],
       valign: 'middle',
       lineColor: [226, 232, 240],
       lineWidth: 0.2,
     },
     columnStyles: {
-      0: { halign: 'center', cellWidth: 10, fontStyle: 'bold' },
-      1: { halign: 'center', cellWidth: 22 },
+      0: { halign: 'center', cellWidth: 8, fontStyle: 'bold' },
+      1: { halign: 'center', cellWidth: 18 },
       2: { cellWidth: 50 },
-      3: { halign: 'center', cellWidth: 26, fontStyle: 'bold' },
+      3: { halign: 'center', cellWidth: 20, fontStyle: 'bold' },
       4: { halign: 'center', cellWidth: 26, font: 'courier' },
-      5: { halign: 'center', cellWidth: 20, fontStyle: 'bold' },
-      6: { halign: 'center', cellWidth: 16 },
-      7: { halign: 'center', cellWidth: 18 },
+      5: { halign: 'center', cellWidth: 14 },
+      6: { halign: 'center', cellWidth: 20, fontStyle: 'bold' },
+      7: { halign: 'center', cellWidth: 14 },
+      8: { halign: 'center', cellWidth: 16 },
     },
     alternateRowStyles: {
       fillColor: [248, 250, 252],
@@ -701,20 +844,20 @@ export async function exportFindingsToPDF(
       doc.setFontSize(7.5);
       doc.setTextColor(148, 163, 184);
       doc.text(
-        `MetalScan Pro • Laporan Hasil Survei Geofisika GPS & Magnetometer Terintegrasi`,
+        `MetalScan Pro • Laporan PDF Profesional Eksplorasi Geofisika GPS & Magnetometer`,
         margin,
         pageHeight - 8
       );
       doc.text(
         `Halaman ${currentPage} dari ${totalPages}`,
-        pageWidth - margin - 22,
+        pageWidth - margin - 24,
         pageHeight - 8
       );
     },
   });
 
-  // 3. Trigger direct PDF download
-  const pdfFilename = `metalscan_pro_laporan_peta_${new Date().toISOString().slice(0, 10)}.pdf`;
+  // 4. Trigger direct PDF download
+  const pdfFilename = `metalscan_pro_laporan_profesional_${new Date().toISOString().slice(0, 10)}.pdf`;
   doc.save(pdfFilename);
 }
 

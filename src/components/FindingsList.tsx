@@ -34,6 +34,7 @@ import {
   LocateFixed,
   ArrowUpDown,
   CheckCircle2,
+  Scale,
 } from 'lucide-react';
 import { exportFindingsToCSV, exportFindingsToPDF } from '../services/exportService';
 import { geminiService } from '../services/geminiService';
@@ -50,6 +51,7 @@ import {
 } from '../data/ntbPriorityFindings';
 import { GpsCompassModal } from './GpsCompassModal';
 import { TrailReportModal } from './TrailReportModal';
+import { ArtifactComparisonModal } from './ArtifactComparisonModal';
 
 interface FindingsListProps {
   findings: MetalFinding[];
@@ -109,6 +111,19 @@ export const FindingsList: React.FC<FindingsListProps> = ({
   const [ntbSearchQuery, setNtbSearchQuery] = useState<string>('');
   const [selectedNTBPriority, setSelectedNTBPriority] = useState<string>('all');
   const [selectedNTBCategory, setSelectedNTBCategory] = useState<string>('all');
+
+  // Artifact Side-by-Side Comparison State
+  const [isCompareModalOpen, setIsCompareModalOpen] = useState<boolean>(false);
+  const [compareTargetA, setCompareTargetA] = useState<MetalFinding | null>(null);
+  const [compareTargetB, setCompareTargetB] = useState<MetalFinding | null>(null);
+
+  const handleOpenCompare = (finding: MetalFinding) => {
+    setCompareTargetA(finding);
+    // Auto-select a different second finding if available
+    const other = findings.find((f) => f.id !== finding.id) || finding;
+    setCompareTargetB(other);
+    setIsCompareModalOpen(true);
+  };
 
   const handleOpenCompass = (target?: NTBPriorityFinding) => {
     const chosen = target || selectedCompassTarget || NTB_PRIORITY_FINDINGS[0];
@@ -235,7 +250,29 @@ export const FindingsList: React.FC<FindingsListProps> = ({
     return findingCat === filterCat;
   };
 
-  const [sortBy, setSortBy] = useState<'newest' | 'distance' | 'flux' | 'depth'>('newest');
+  const [sortBy, setSortBy] = useState<'newest' | 'oldest' | 'distance' | 'flux' | 'depth'>('newest');
+  const [depthFilter, setDepthFilter] = useState<'all' | 'shallow' | 'mid' | 'deep'>('all');
+
+  // Helper matching logic for depth filter (< 10cm, 10-20cm, > 20cm)
+  const isMatchingDepth = (depthCm: number, filter: 'all' | 'shallow' | 'mid' | 'deep'): boolean => {
+    if (filter === 'all') return true;
+    if (filter === 'shallow') return depthCm < 10;
+    if (filter === 'mid') return depthCm >= 10 && depthCm <= 20;
+    if (filter === 'deep') return depthCm > 20;
+    return true;
+  };
+
+  // Depth counts across current findings
+  const depthCounts = useMemo(() => {
+    const counts = { all: findings.length, shallow: 0, mid: 0, deep: 0 };
+    findings.forEach((f) => {
+      const d = f.depthEstimateCm ?? 15;
+      if (d < 10) counts.shallow++;
+      else if (d <= 20) counts.mid++;
+      else counts.deep++;
+    });
+    return counts;
+  }, [findings]);
 
   const filteredFindings = findings.filter((f) => {
     const matchesCat =
@@ -244,17 +281,21 @@ export const FindingsList: React.FC<FindingsListProps> = ({
         : selectedCategory === 'priority'
         ? f.isPriority === true
         : isMatchingCategory(f.category, selectedCategory);
+    const matchesDepth = isMatchingDepth(f.depthEstimateCm ?? 15, depthFilter);
     const matchesSearch =
       searchQuery.trim() === '' ||
       f.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       (f.note && f.note.toLowerCase().includes(searchQuery.toLowerCase())) ||
       f.category.toLowerCase().includes(searchQuery.toLowerCase());
-    return matchesCat && matchesSearch;
+    return matchesCat && matchesDepth && matchesSearch;
   });
 
   // Sort findings with real-time target distance support
   const sortedFindings = useMemo(() => {
     return [...filteredFindings].sort((a, b) => {
+      if (sortBy === 'oldest') {
+        return a.timestamp - b.timestamp;
+      }
       if (sortBy === 'distance') {
         if (userLocation) {
           const distA = calculateDistanceMeters(userLocation.lat, userLocation.lng, a.lat, a.lng);
@@ -587,6 +628,23 @@ export const FindingsList: React.FC<FindingsListProps> = ({
               </button>
             )}
 
+            {/* Tombol Compare 2 Artefak */}
+            {findings.length >= 2 && (
+              <button
+                type="button"
+                onClick={() => {
+                  setCompareTargetA(findings[0]);
+                  setCompareTargetB(findings[1]);
+                  setIsCompareModalOpen(true);
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-purple-600/25 hover:bg-purple-600/35 text-purple-300 border border-purple-500/40 text-xs font-mono font-medium transition-all shadow-sm active:scale-95"
+                title="Buka perbandingan side-by-side dua artefak (data magnetik & kedalaman)"
+              >
+                <Scale className="w-3.5 h-3.5 text-purple-400" />
+                <span>Bandingkan Artefak</span>
+              </button>
+            )}
+
             {/* Ekspor CSV Button */}
             <button
               type="button"
@@ -613,6 +671,19 @@ export const FindingsList: React.FC<FindingsListProps> = ({
               )}
               <span>{isGeneratingPDF ? 'Menyusun...' : 'Ekspor PDF (Peta)'}</span>
             </button>
+
+            {/* Compare Tool Quick Button */}
+            {findings.length >= 2 && (
+              <button
+                type="button"
+                onClick={() => handleOpenCompare(findings[0])}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-purple-600/20 hover:bg-purple-600/30 text-purple-300 border border-purple-500/40 text-xs font-mono font-medium transition-all shadow-sm active:scale-95"
+                title="Bandingkan dua artefak side-by-side (data magnetik & kedalaman)"
+              >
+                <Scale className="w-3.5 h-3.5 text-purple-400" />
+                <span>Compare</span>
+              </button>
+            )}
 
             {/* Opsi Ekspor Lengkap Modal */}
             {onOpenExportModal && (
@@ -851,6 +922,28 @@ export const FindingsList: React.FC<FindingsListProps> = ({
             </div>
           </div>
 
+          {/* Depth Filter Dropdown */}
+          <div className="relative min-w-[170px] sm:w-auto">
+            <div className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none text-cyan-400 flex items-center">
+              <Layers className="w-3.5 h-3.5" />
+            </div>
+            <select
+              value={depthFilter}
+              onChange={(e) => setDepthFilter(e.target.value as any)}
+              className="w-full sm:w-auto pl-8 pr-8 py-2 bg-slate-900 border border-slate-700 hover:border-cyan-500/70 focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400/30 rounded-xl text-xs font-mono text-slate-100 outline-none transition-all cursor-pointer shadow-sm appearance-none font-medium"
+              title="Filter temuan berdasarkan estimasi kedalaman tanah"
+              aria-label="Filter berdasarkan estimasi kedalaman"
+            >
+              <option value="all">Semua Kedalaman ({depthCounts.all})</option>
+              <option value="shallow">Dangkal &lt; 10 cm ({depthCounts.shallow})</option>
+              <option value="mid">Sedang 10 - 20 cm ({depthCounts.mid})</option>
+              <option value="deep">Dalam &gt; 20 cm ({depthCounts.deep})</option>
+            </select>
+            <div className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
+              <ChevronDown className="w-3.5 h-3.5" />
+            </div>
+          </div>
+
           {/* Sort By Dropdown including Jarak Tempuh Terdekat */}
           <div className="relative min-w-[200px] sm:w-auto">
             <div className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none text-emerald-400 flex items-center">
@@ -860,13 +953,14 @@ export const FindingsList: React.FC<FindingsListProps> = ({
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value as any)}
               className="w-full sm:w-auto pl-8 pr-8 py-2 bg-slate-900 border border-slate-700 hover:border-emerald-500/70 focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400/30 rounded-xl text-xs font-mono text-slate-100 outline-none transition-all cursor-pointer shadow-sm appearance-none font-medium"
-              title="Urutkan temuan berdasarkan jarak tempuh atau kriteria lainnya"
+              title="Urutkan temuan berdasarkan tanggal, kekuatan magnetik, jarak tempuh GPS, atau kedalaman"
               aria-label="Urutkan temuan"
             >
-              <option value="newest">🕒 Urutkan: Terbaru</option>
-              <option value="distance">🎯 Jarak Tempuh Terdekat (GPS)</option>
+              <option value="newest">🕒 Tanggal: Terbaru (Default)</option>
+              <option value="oldest">🕒 Tanggal: Terlama</option>
+              <option value="distance">🎯 Jarak / Proksimitas Lokasi (GPS)</option>
               <option value="flux">⚡ Kekuatan Magnetik (µT)</option>
-              <option value="depth">⛏️ Kedalaman Dangkal</option>
+              <option value="depth">⛏️ Kedalaman: Paling Dangkal</option>
             </select>
             <div className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
               <ChevronDown className="w-3.5 h-3.5" />
@@ -896,53 +990,94 @@ export const FindingsList: React.FC<FindingsListProps> = ({
           </div>
         </div>
 
-        {/* Quick Filter Category Pills */}
-        <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 scrollbar-none text-[11px] font-mono">
-          <span className="text-[10px] text-slate-500 uppercase tracking-wider shrink-0 flex items-center gap-1 mr-1">
-            <SlidersHorizontal className="w-3 h-3 text-slate-500" />
-            Filter Cepat:
-          </span>
-          {[
-            { id: 'all', label: 'Semua', count: totalCount },
-            { id: 'favorite', label: '❤️ Favorit', count: favoriteCount },
-            { id: 'priority', label: '★ Prioritas 5m', count: priorityCount },
-            { id: 'gold', label: '★ Emas', count: goldCount },
-            { id: 'bronze', label: '⬢ Perunggu', count: bronzeCount },
-            { id: 'meteorite', label: '☄ Meteorit', count: meteoriteCount },
-            { id: 'other', label: '❖ Lainnya', count: otherCount },
-          ].map((tab) => {
-            const isTabActive =
-              tab.id === 'all'
-                ? selectedCategory === 'all'
-                : tab.id === 'other'
-                ? selectedCategory === 'other' || ['silver', 'iron', 'unknown'].includes(selectedCategory)
-                : selectedCategory === tab.id;
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => handleSelectCategory(tab.id)}
-                className={`px-2.5 py-1 rounded-xl border whitespace-nowrap transition-all flex items-center gap-1.5 ${
-                  isTabActive
-                    ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/60 font-semibold shadow-sm'
-                    : 'bg-slate-900/60 text-slate-400 border-slate-800 hover:text-slate-200 hover:border-slate-700'
-                }`}
-              >
-                <span>{tab.label}</span>
-                <span
-                  className={`text-[9px] px-1.5 py-0.2 rounded-full font-bold ${
-                    isTabActive ? 'bg-cyan-400/25 text-cyan-200' : 'bg-slate-800 text-slate-400'
+        {/* Quick Filter Category & Depth Pills */}
+        <div className="flex flex-col gap-1.5 text-[11px] font-mono">
+          {/* Row 1: Metal Category Pills */}
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 scrollbar-none">
+            <span className="text-[10px] text-slate-500 uppercase tracking-wider shrink-0 flex items-center gap-1 mr-1">
+              <SlidersHorizontal className="w-3 h-3 text-slate-500" />
+              Kategori:
+            </span>
+            {[
+              { id: 'all', label: 'Semua', count: totalCount },
+              { id: 'favorite', label: '❤️ Favorit', count: favoriteCount },
+              { id: 'priority', label: '★ Prioritas 5m', count: priorityCount },
+              { id: 'gold', label: '★ Emas', count: goldCount },
+              { id: 'bronze', label: '⬢ Perunggu', count: bronzeCount },
+              { id: 'meteorite', label: '☄ Meteorit', count: meteoriteCount },
+              { id: 'other', label: '❖ Lainnya', count: otherCount },
+            ].map((tab) => {
+              const isTabActive =
+                tab.id === 'all'
+                  ? selectedCategory === 'all'
+                  : tab.id === 'other'
+                  ? selectedCategory === 'other' || ['silver', 'iron', 'unknown'].includes(selectedCategory)
+                  : selectedCategory === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => handleSelectCategory(tab.id)}
+                  className={`px-2.5 py-1 rounded-xl border whitespace-nowrap transition-all flex items-center gap-1.5 ${
+                    isTabActive
+                      ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/60 font-semibold shadow-sm'
+                      : 'bg-slate-900/60 text-slate-400 border-slate-800 hover:text-slate-200 hover:border-slate-700'
                   }`}
                 >
-                  {tab.count}
-                </span>
-              </button>
-            );
-          })}
+                  <span>{tab.label}</span>
+                  <span
+                    className={`text-[9px] px-1.5 py-0.2 rounded-full font-bold ${
+                      isTabActive ? 'bg-cyan-400/25 text-cyan-200' : 'bg-slate-800 text-slate-400'
+                    }`}
+                  >
+                    {tab.count}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Row 2: Depth Filter Pills */}
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 scrollbar-none">
+            <span className="text-[10px] text-cyan-400/80 uppercase tracking-wider shrink-0 flex items-center gap-1 mr-1">
+              <Layers className="w-3 h-3 text-cyan-400" />
+              Kedalaman:
+            </span>
+            {[
+              { id: 'all' as const, label: 'Semua Kedalaman', count: depthCounts.all, color: 'text-slate-300' },
+              { id: 'shallow' as const, label: '⛏️ Dangkal (<10cm)', count: depthCounts.shallow, color: 'text-emerald-300' },
+              { id: 'mid' as const, label: '🌿 Sedang (10-20cm)', count: depthCounts.mid, color: 'text-amber-300' },
+              { id: 'deep' as const, label: '🪨 Dalam (>20cm)', count: depthCounts.deep, color: 'text-orange-300' },
+            ].map((dTab) => {
+              const isDepthActive = depthFilter === dTab.id;
+              return (
+                <button
+                  key={dTab.id}
+                  type="button"
+                  onClick={() => setDepthFilter(dTab.id)}
+                  className={`px-2.5 py-1 rounded-xl border whitespace-nowrap transition-all flex items-center gap-1.5 ${
+                    isDepthActive
+                      ? 'bg-gradient-to-r from-cyan-600/30 to-blue-600/30 text-white border-cyan-400 font-bold shadow-md shadow-cyan-950/40'
+                      : 'bg-slate-900/60 text-slate-400 border-slate-800 hover:text-slate-200 hover:border-slate-700'
+                  }`}
+                  title={`Filter temuan kedalaman: ${dTab.label}`}
+                >
+                  <span className={isDepthActive ? 'text-white' : dTab.color}>{dTab.label}</span>
+                  <span
+                    className={`text-[9px] px-1.5 py-0.2 rounded-full font-bold ${
+                      isDepthActive ? 'bg-cyan-400 text-slate-950' : 'bg-slate-800 text-slate-400'
+                    }`}
+                  >
+                    {dTab.count}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
         </div>
 
         {/* Active Filter Indicator & Reset */}
-        {(selectedCategory !== 'all' || searchQuery.trim() !== '') && (
+        {(selectedCategory !== 'all' || depthFilter !== 'all' || searchQuery.trim() !== '') && (
           <div className="flex items-center justify-between text-[11px] font-mono bg-cyan-950/30 border border-cyan-800/40 px-2.5 py-1.5 rounded-xl text-cyan-300">
             <div className="flex items-center gap-1.5 flex-wrap">
               <Filter className="w-3 h-3 text-cyan-400" />
@@ -952,6 +1087,18 @@ export const FindingsList: React.FC<FindingsListProps> = ({
                   <span>
                     {' '}• Kategori:{' '}
                     <strong className="text-white">{getCategoryLabel(selectedCategory)}</strong>
+                  </span>
+                )}
+                {depthFilter !== 'all' && (
+                  <span>
+                    {' '}• Kedalaman:{' '}
+                    <strong className="text-white">
+                      {depthFilter === 'shallow'
+                        ? '< 10 cm (Dangkal)'
+                        : depthFilter === 'mid'
+                        ? '10 - 20 cm (Sedang)'
+                        : '> 20 cm (Dalam)'}
+                    </strong>
                   </span>
                 )}
                 {sortBy === 'distance' && (
@@ -966,6 +1113,7 @@ export const FindingsList: React.FC<FindingsListProps> = ({
               type="button"
               onClick={() => {
                 handleSelectCategory('all');
+                setDepthFilter('all');
                 setSearchQuery('');
               }}
               className="text-[10px] text-cyan-400 hover:text-white underline font-semibold ml-2 shrink-0 flex items-center gap-1"
@@ -977,10 +1125,30 @@ export const FindingsList: React.FC<FindingsListProps> = ({
         )}
       </div>
 
+      {/* Embedded CSS Keyframes for smooth slide-in and fade-in transitions */}
+      <style>{`
+        @keyframes finding-item-slide-in {
+          0% {
+            opacity: 0;
+            transform: translateY(14px) scale(0.98);
+          }
+          60% {
+            transform: translateY(-2px) scale(1.005);
+          }
+          100% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+          }
+        }
+        .animate-finding-item {
+          animation: finding-item-slide-in 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+        }
+      `}</style>
+
       {/* List items */}
       <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
         {findings.length === 0 ? (
-          <div className="text-center py-10 px-4 bg-slate-950/40 rounded-2xl border border-slate-800/60">
+          <div className="text-center py-10 px-4 bg-slate-950/40 rounded-2xl border border-slate-800/60 animate-in fade-in duration-300">
             <Sparkles className="w-8 h-8 text-slate-600 mx-auto mb-2 animate-bounce" />
             <p className="text-xs font-semibold text-slate-400">Belum Ada Titik Temuan Tersimpan</p>
             <p className="text-[11px] text-slate-500 max-w-sm mx-auto mt-1">
@@ -988,18 +1156,27 @@ export const FindingsList: React.FC<FindingsListProps> = ({
             </p>
           </div>
         ) : sortedFindings.length === 0 ? (
-          <div className="text-center py-8 px-4 bg-slate-950/40 rounded-2xl border border-slate-800/60">
+          <div className="text-center py-8 px-4 bg-slate-950/40 rounded-2xl border border-slate-800/60 animate-in fade-in duration-300">
             <Filter className="w-7 h-7 text-slate-500 mx-auto mb-2 opacity-60" />
             <p className="text-xs font-semibold text-slate-300">
-              Tidak Ada Temuan untuk Kategori "{getCategoryLabel(selectedCategory)}"
+              Tidak Ada Temuan yang Cocok
             </p>
             <p className="text-[11px] text-slate-500 max-w-xs mx-auto mt-1">
-              Tidak ada data temuan yang cocok dengan filter atau kata kunci saat ini.
+              {depthFilter !== 'all'
+                ? `Tidak ada temuan dengan kedalaman ${
+                    depthFilter === 'shallow'
+                      ? '< 10 cm'
+                      : depthFilter === 'mid'
+                      ? '10 - 20 cm'
+                      : '> 20 cm'
+                  } untuk filter saat ini.`
+                : `Tidak ada data temuan yang cocok dengan kategori "${getCategoryLabel(selectedCategory)}" atau kata kunci pencarian.`}
             </p>
             <button
               type="button"
               onClick={() => {
                 handleSelectCategory('all');
+                setDepthFilter('all');
                 setSearchQuery('');
               }}
               className="mt-3 px-3 py-1.5 rounded-xl bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 border border-cyan-500/40 text-xs font-mono font-medium transition-all"
@@ -1008,12 +1185,14 @@ export const FindingsList: React.FC<FindingsListProps> = ({
             </button>
           </div>
         ) : (
-          sortedFindings.map((finding) => {
+          sortedFindings.map((finding, idx) => {
             const theme = getCategoryTheme(finding.category);
+            const staggerDelayMs = Math.min(idx * 45, 300);
             return (
               <div
                 key={finding.id}
-                className="bg-slate-950/80 hover:bg-slate-950 border border-slate-800/90 rounded-2xl p-3.5 transition-all flex flex-col gap-2.5"
+                style={{ animationDelay: `${staggerDelayMs}ms` }}
+                className="animate-finding-item bg-slate-950/80 hover:bg-slate-950 border border-slate-800/90 rounded-2xl p-3.5 transition-all flex flex-col gap-2.5 shadow-sm hover:border-slate-700/90"
               >
                 <div className="flex items-start justify-between">
                   <div className="flex items-center gap-3">
@@ -1162,6 +1341,17 @@ export const FindingsList: React.FC<FindingsListProps> = ({
                       title="Arahkan Kompas GPS ke titik temuan ini"
                     >
                       <Compass className="w-3.5 h-3.5" />
+                    </button>
+
+                    {/* Compare Button */}
+                    <button
+                      type="button"
+                      onClick={() => handleOpenCompare(finding)}
+                      className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-purple-950/40 hover:bg-purple-900/50 text-purple-300 border border-purple-500/40 hover:border-purple-400/60 transition-all text-xs font-mono font-medium shadow-sm active:scale-95"
+                      title="Compare: Bandingkan data magnetik & kedalaman dengan artefak lain"
+                    >
+                      <Scale className="w-3.5 h-3.5 text-purple-400" />
+                      <span>Compare</span>
                     </button>
 
                     <button
@@ -1449,6 +1639,17 @@ export const FindingsList: React.FC<FindingsListProps> = ({
                             <span>Pandu Kompas</span>
                           </button>
 
+                          {/* Compare Button */}
+                          <button
+                            type="button"
+                            onClick={() => handleOpenCompare(finding)}
+                            className="flex items-center gap-1 px-2.5 py-1 rounded-xl bg-purple-500/15 hover:bg-purple-500/25 text-purple-300 border border-purple-500/40 text-[11px] font-medium transition-all active:scale-95"
+                            title="Pilih dan bandingkan data magnetik serta kedalaman artefak ini dengan artefak lainnya"
+                          >
+                            <Scale className="w-3.5 h-3.5 text-purple-400" />
+                            <span>Compare</span>
+                          </button>
+
                           {/* Alarm Online/Offline */}
                           <button
                             type="button"
@@ -1474,6 +1675,15 @@ export const FindingsList: React.FC<FindingsListProps> = ({
                 <span>GPS: {finding.lat.toFixed(6)}, {finding.lng.toFixed(6)} (±{Math.round(finding.accuracy)}m)</span>
                 <span>Waktu: {new Date(finding.timestamp).toLocaleDateString()}</span>
               </div>
+
+              {/* Reverse Geocoded Landmark / Location Badge */}
+              {finding.locationName && (
+                <div className="flex items-center gap-1.5 text-[11px] font-mono text-cyan-300 bg-cyan-950/40 border border-cyan-800/50 px-2.5 py-1.5 rounded-xl">
+                  <MapPin className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                  <span className="text-[9px] text-cyan-400/80 uppercase font-bold tracking-wider shrink-0">Lokasi / Landmark:</span>
+                  <span className="font-semibold text-slate-100 truncate">{finding.locationName}</span>
+                </div>
+              )}
 
               {/* AI Analysis Artifact Card (if analyzed) */}
               {finding.aiAnalysis && (
@@ -2079,6 +2289,21 @@ export const FindingsList: React.FC<FindingsListProps> = ({
           if (f) {
             onNavigateToMap(f);
           }
+        }}
+      />
+
+      {/* Artifact Side-by-Side Comparison Modal */}
+      <ArtifactComparisonModal
+        isOpen={isCompareModalOpen}
+        onClose={() => setIsCompareModalOpen(false)}
+        targetA={compareTargetA}
+        targetB={compareTargetB}
+        allFindings={findings}
+        onSelectTargetA={(f) => setCompareTargetA(f)}
+        onSelectTargetB={(f) => setCompareTargetB(f)}
+        onNavigateToMap={(f) => {
+          setIsCompareModalOpen(false);
+          onNavigateToMap(f);
         }}
       />
     </div>

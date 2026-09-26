@@ -57,6 +57,24 @@ export interface MetalFinding {
   isPriority?: boolean; // Geofence 5m monitoring target flag
   isFavorite?: boolean; // Favoritkan temuan untuk filter khusus di peta & statistik
   aiAnalysis?: GeminiFindingAnalysis;
+  locationName?: string; // Nama lokasi / landmark terdekat dari reverse geocoding API
+}
+
+export type VibrationIntensity = 'light' | 'medium' | 'strong';
+
+export type MotionActivityState = 'STATIONARY' | 'SLOW_MOVE' | 'FAST_MOVE';
+
+export interface AdaptiveSamplingState {
+  enabled: boolean;
+  motionState: MotionActivityState;
+  accelerometerMagnitude: number; // in m/s²
+  motionSpeedEstimateMs: number; // in m/s
+  sensorHz: number; // target sensor polling frequency (e.g. 8, 18, 32 Hz)
+  gpsProfile: 'eco_standby' | 'balanced' | 'high_precision';
+  gpsIntervalMs: number;
+  estimatedBatterySavingsPercent: number; // e.g. 62%
+  isDeviceMotionSupported: boolean;
+  lastMotionUpdate: number;
 }
 
 export interface DetectorSettings {
@@ -65,6 +83,7 @@ export interface DetectorSettings {
   soundEnabled: boolean;
   soundVolume: number;
   vibrationEnabled: boolean;
+  vibrationIntensity?: VibrationIntensity; // 'light' | 'medium' | 'strong' (preferensi kenyamanan getaran haptik)
   proximityPulseEnabled: boolean; // Phone LED torch / visual pulse alarm
   proximityPulseThreshold: number; // in µT to trigger flash pulse
   sensitivity: number; // 1 to 5
@@ -75,6 +94,7 @@ export interface DetectorSettings {
   batterySaverEnabled: boolean; // Auto reduce polling when battery low or screen off
   batterySaverThreshold: number; // percentage (e.g. 20)
   forceBatterySaver: boolean; // manual eco mode override
+  adaptiveSamplingEnabled?: boolean; // Smart Battery Adaptive Sampling (Algoritma hemat daya berbasis sensor akselerometer)
   driftMonitorEnabled: boolean; // Calibration Drift Monitor active
   driftAlertThreshold: number; // in µT (e.g. 5.0 µT)
   driftSoundAlertEnabled: boolean; // Audio chime when environment becomes noisy
@@ -207,6 +227,7 @@ export interface BatteryState {
   isPowerSaveActive: boolean;
   currentMagnetometerHz: number;
   gpsMode: 'high_accuracy' | 'battery_saving' | 'standby';
+  adaptiveSamplingState?: AdaptiveSamplingState;
 }
 
 export type SoilMineralizationLevel = 'VERY_LOW' | 'LOW_MEDIUM' | 'HIGH' | 'SEVERE';

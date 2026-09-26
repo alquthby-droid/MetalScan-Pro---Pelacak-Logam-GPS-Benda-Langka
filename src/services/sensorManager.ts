@@ -347,6 +347,45 @@ export class SensorManager {
     return this.targetFrequency;
   }
 
+  /**
+   * Smart Battery Adaptive Sampling:
+   * Dynamically adjusts sensor polling rate according to user's real-time motion speed & activity
+   */
+  public setDynamicAdaptiveSamplingRate(adaptiveHz: number): void {
+    if (this.isScreenOff) {
+      // Screen off overrides all adaptive rates to deep 2 Hz background heartbeat
+      return;
+    }
+    const safeHz = Math.max(4, Math.min(40, Math.round(adaptiveHz)));
+    if (this.targetFrequency === safeHz) return;
+
+    this.targetFrequency = safeHz;
+    this.startContinuousStreamLoop();
+
+    if (this.magnetometer && 'Magnetometer' in window) {
+      try {
+        this.magnetometer.stop();
+        const MagConstructor = (
+          window as unknown as { Magnetometer: new (options?: { frequency: number }) => RawMagnetometer }
+        ).Magnetometer;
+        const mag = new MagConstructor({ frequency: this.targetFrequency });
+        this.magnetometer = mag;
+
+        mag.addEventListener('reading', () => {
+          if (!this.simulationActive) {
+            this.hasHardwareEvents = true;
+            this.lastHardwareTimestamp = Date.now();
+            this.processHardwareReading(mag.x || 0, mag.y || 0, mag.z || 0);
+          }
+        });
+
+        mag.start();
+      } catch {
+        // Throttling in processHardwareReading ensures rate reduction regardless
+      }
+    }
+  }
+
   public isPowerSavingActive(): boolean {
     return this.isPowerSaving || this.isScreenOff;
   }

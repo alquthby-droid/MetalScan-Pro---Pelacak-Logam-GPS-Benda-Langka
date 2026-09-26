@@ -27,6 +27,7 @@ import {
   BatteryCharging,
   BatteryWarning,
   Leaf,
+  Heart,
 } from 'lucide-react';
 
 import {
@@ -41,11 +42,13 @@ import { audioService } from './services/audioSynthesizer';
 import { proximityPulseService } from './services/proximityPulse';
 import { batteryManager } from './services/batteryManager';
 import { GaugeMeter } from './components/GaugeMeter';
+import { DepthProbabilityGauge } from './components/DepthProbabilityGauge';
 import { WaveformChart } from './components/WaveformChart';
 import { RadarScanner } from './components/RadarScanner';
 import { FindingsMap } from './components/FindingsMap';
 import { FindingsList } from './components/FindingsList';
 import { FindingsDistributionChart } from './components/FindingsDistributionChart';
+import { WeeklyTrendLineChart } from './components/WeeklyTrendLineChart';
 import { ARMetalFinder } from './components/ARMetalFinder';
 import { SimulationControls } from './components/SimulationControls';
 import { DetectorSettingsModal } from './components/DetectorSettingsModal';
@@ -80,6 +83,9 @@ import { ExcavationSafetyBanner } from './components/ExcavationSafetyBanner';
 import { NightModeToggle } from './components/NightModeToggle';
 import { SoilMineralizationModal } from './components/SoilMineralizationModal';
 import { trailService } from './services/trailService';
+import { reverseGeocodingService } from './services/reverseGeocodingService';
+import { adaptiveSamplingService } from './services/adaptiveSamplingService';
+import { AdaptiveSamplingState } from './types/detector';
 import { Cloud, Eye } from 'lucide-react';
 
 const DEFAULT_SETTINGS: DetectorSettings = {
@@ -88,6 +94,7 @@ const DEFAULT_SETTINGS: DetectorSettings = {
   soundEnabled: true,
   soundVolume: 0.6,
   vibrationEnabled: true,
+  vibrationIntensity: 'medium',
   proximityPulseEnabled: true,
   proximityPulseThreshold: 75.0, // µT
   sensitivity: 3,
@@ -98,6 +105,7 @@ const DEFAULT_SETTINGS: DetectorSettings = {
   batterySaverEnabled: true,
   batterySaverThreshold: 20,
   forceBatterySaver: false,
+  adaptiveSamplingEnabled: true,
   driftMonitorEnabled: true,
   driftAlertThreshold: 5.0,
   driftSoundAlertEnabled: false,
@@ -248,6 +256,25 @@ export default function App() {
 
   const [geofenceState, setGeofenceState] = useState<GeofenceState>(() => geofenceService.getState());
   const [isDeployGuideOpen, setIsDeployGuideOpen] = useState<boolean>(false);
+
+  const [adaptiveSamplingState, setAdaptiveSamplingState] = useState<AdaptiveSamplingState>(() =>
+    adaptiveSamplingService.getState()
+  );
+
+  useEffect(() => {
+    adaptiveSamplingService.init();
+    adaptiveSamplingService.setEnabled(settings.adaptiveSamplingEnabled ?? true);
+    const unsub = adaptiveSamplingService.subscribe((st) => {
+      setAdaptiveSamplingState(st);
+      if (settings.adaptiveSamplingEnabled ?? true) {
+        sensorManager.setDynamicAdaptiveSamplingRate(st.sensorHz);
+      }
+    });
+    return () => {
+      unsub();
+      adaptiveSamplingService.destroy();
+    };
+  }, [settings.adaptiveSamplingEnabled]);
 
   useEffect(() => {
     const unsub = geofenceService.subscribe((st) => setGeofenceState(st));
@@ -402,15 +429,24 @@ export default function App() {
       const initial = batteryManager.evaluate(
         settings.batterySaverEnabled ?? true,
         settings.batterySaverThreshold ?? 20,
-        settings.forceBatterySaver ?? false
+        settings.forceBatterySaver ?? false,
+        adaptiveSamplingState
       );
       setBatteryState(initial);
-      sensorManager.setPowerSaveMode(initial.isPowerSaveActive, initial.isScreenOff);
+      if (initial.isPowerSaveActive || initial.isScreenOff) {
+        sensorManager.setPowerSaveMode(initial.isPowerSaveActive, initial.isScreenOff);
+      } else if (settings.adaptiveSamplingEnabled ?? true) {
+        sensorManager.setDynamicAdaptiveSamplingRate(adaptiveSamplingState.sensorHz);
+      }
     });
 
     unsubBattery = batteryManager.subscribe((st) => {
       setBatteryState(st);
-      sensorManager.setPowerSaveMode(st.isPowerSaveActive, st.isScreenOff);
+      if (st.isPowerSaveActive || st.isScreenOff) {
+        sensorManager.setPowerSaveMode(st.isPowerSaveActive, st.isScreenOff);
+      } else if (settings.adaptiveSamplingEnabled ?? true) {
+        sensorManager.setDynamicAdaptiveSamplingRate(adaptiveSamplingState.sensorHz);
+      }
     });
 
     return () => {
@@ -419,16 +455,29 @@ export default function App() {
     };
   }, []);
 
-  // Update battery evaluation whenever power saving settings change
+  // Update battery evaluation whenever power saving settings or adaptive sampling changes
   useEffect(() => {
     const st = batteryManager.evaluate(
       settings.batterySaverEnabled ?? true,
       settings.batterySaverThreshold ?? 20,
-      settings.forceBatterySaver ?? false
+      settings.forceBatterySaver ?? false,
+      adaptiveSamplingState
     );
     setBatteryState(st);
-    sensorManager.setPowerSaveMode(st.isPowerSaveActive, st.isScreenOff);
-  }, [settings.batterySaverEnabled, settings.batterySaverThreshold, settings.forceBatterySaver]);
+    if (st.isPowerSaveActive || st.isScreenOff) {
+      sensorManager.setPowerSaveMode(st.isPowerSaveActive, st.isScreenOff);
+    } else if (settings.adaptiveSamplingEnabled ?? true) {
+      sensorManager.setDynamicAdaptiveSamplingRate(adaptiveSamplingState.sensorHz);
+    } else {
+      sensorManager.setPowerSaveMode(false, false);
+    }
+  }, [
+    settings.batterySaverEnabled,
+    settings.batterySaverThreshold,
+    settings.forceBatterySaver,
+    settings.adaptiveSamplingEnabled,
+    adaptiveSamplingState,
+  ]);
 
   // Initialize Sensors & Proximity Pulse
   useEffect(() => {
@@ -498,12 +547,27 @@ export default function App() {
     };
   }, [settings.driftAlertThreshold, settings.driftSoundAlertEnabled, settings.driftMonitorEnabled]);
 
-  // Initialize GPS Geolocation Watcher (Automatically reduced polling & low power mode when battery is low or screen is off)
+  // Initialize GPS Geolocation Watcher (Automatically reduced polling & low power mode when battery is low, screen is off, or user is stationary)
   useEffect(() => {
     if (!('geolocation' in navigator)) return;
 
     const isEco = batteryState.isPowerSaveActive;
     const isScreenHidden = batteryState.isScreenOff;
+    const isAdaptive = (settings.adaptiveSamplingEnabled ?? true) && !isEco && !isScreenHidden;
+    const gpsProfile = isAdaptive ? adaptiveSamplingState.gpsProfile : isEco ? 'eco_standby' : 'high_precision';
+
+    const maxAge = isScreenHidden
+      ? 60000
+      : isEco
+      ? 30000
+      : gpsProfile === 'eco_standby'
+      ? 25000
+      : gpsProfile === 'balanced'
+      ? 8000
+      : 2500;
+
+    const timeout = isEco ? 25000 : gpsProfile === 'eco_standby' ? 20000 : 10000;
+    const enableHighAccuracy = !isEco && !isScreenHidden && (gpsProfile === 'high_precision' || !isAdaptive);
 
     const watchId = navigator.geolocation.watchPosition(
       (pos) => {
@@ -518,6 +582,7 @@ export default function App() {
         };
         setUserLocation(loc);
         latestLocationRef.current = loc;
+        adaptiveSamplingService.updateGpsSpeed(pos.coords.speed);
         targetCenterAlarmService.updateUserLocation(loc.lat, loc.lng);
         trailService.recordPoint(
           loc.lat,
@@ -532,18 +597,21 @@ export default function App() {
         console.warn('Geolocation watch error:', err.message);
       },
       {
-        // When in power-saving mode: disable power-draining GNSS satellite chip (fallback to cell/wifi)
-        enableHighAccuracy: !isEco,
-        // Cache positions up to 30s-60s to avoid waking hardware radio constantly
-        maximumAge: isScreenHidden ? 60000 : isEco ? 30000 : 3000,
-        timeout: isEco ? 25000 : 10000,
+        enableHighAccuracy,
+        maximumAge: maxAge,
+        timeout,
       }
     );
 
     return () => {
       navigator.geolocation.clearWatch(watchId);
     };
-  }, [batteryState.isPowerSaveActive, batteryState.isScreenOff]);
+  }, [
+    batteryState.isPowerSaveActive,
+    batteryState.isScreenOff,
+    settings.adaptiveSamplingEnabled,
+    adaptiveSamplingState.gpsProfile,
+  ]);
 
   // Update Audio feedback, Vibration & Proximity Pulse Flash LED based on magnetic reading
   useEffect(() => {
@@ -562,7 +630,9 @@ export default function App() {
       'vibrate' in navigator
     ) {
       try {
-        navigator.vibrate(40);
+        const intensity = settings.vibrationIntensity || 'medium';
+        const duration = intensity === 'light' ? 18 : intensity === 'strong' ? 75 : 40;
+        navigator.vibrate(duration);
       } catch {
         // ignore
       }
@@ -662,7 +732,14 @@ export default function App() {
       audioService.playAlertBeep(true);
       if ('vibrate' in navigator && settings.vibrationEnabled) {
         try {
-          navigator.vibrate([100, 50, 200]);
+          const intensity = settings.vibrationIntensity || 'medium';
+          const pattern =
+            intensity === 'light'
+              ? [40, 30, 50]
+              : intensity === 'strong'
+              ? [160, 50, 220, 50, 160]
+              : [100, 50, 200];
+          navigator.vibrate(pattern);
         } catch {
           // ignore
         }
@@ -690,6 +767,39 @@ export default function App() {
       setTimeout(() => {
         setRecentNotification(null);
       }, 5000);
+
+      // Automatic Reverse Geocoding API: menambahkan nama lokasi atau landmark terdekat ke dalam temuan
+      reverseGeocodingService
+        .reverseGeocode(loc.lat, loc.lng)
+        .then((geo) => {
+          if (geo && geo.locationName) {
+            setFindings((prev) =>
+              prev.map((f) => {
+                if (f.id === newFinding.id) {
+                  const locationBadge = geo.landmark
+                    ? `📍 Landmark: ${geo.landmark} (${geo.locationName})`
+                    : `📍 Lokasi: ${geo.locationName}`;
+                  return {
+                    ...f,
+                    locationName: geo.locationName,
+                    note: `${locationBadge} • ${f.note || ''}`,
+                  };
+                }
+                return f;
+              })
+            );
+
+            setRecentNotification({
+              title: isAutoSaved ? 'Auto-Simpan + Lokasi Terdeteksi!' : 'Temuan + Lokasi Terdeteksi!',
+              message: `${classification.name} • 📍 ${geo.locationName}`,
+              category: classification.category,
+              time: Date.now(),
+            });
+          }
+        })
+        .catch((err) => {
+          console.warn('Reverse geocoding error for finding:', err);
+        });
     },
     [userLocation, settings.vibrationEnabled]
   );
@@ -699,6 +809,127 @@ export default function App() {
     audioService.unlockAudio();
     recordFinding(currentReading, false);
   };
+
+  // Quick Pin: Satu klik cepat tandai lokasi saat ini & simpan sebagai Titik Pantau Favorit
+  const handleQuickPinFavorite = useCallback(() => {
+    audioService.unlockAudio();
+    const loc = latestLocationRef.current || userLocation || {
+      lat: -6.2088 + (Math.random() - 0.5) * 0.003,
+      lng: 106.8456 + (Math.random() - 0.5) * 0.003,
+      accuracy: 5,
+      altitude: null,
+      speed: null,
+      heading: null,
+      timestamp: Date.now(),
+    };
+
+    const reading = currentReadingRef.current;
+    const classification = SensorManager.classifyMetal(reading.netTotal, reading.total);
+    const countFavorites = findings.filter((f) => f.isFavorite).length + 1;
+
+    const newFavoriteFinding: MetalFinding = {
+      id: `fav-pin-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      timestamp: Date.now(),
+      lat: loc.lat,
+      lng: loc.lng,
+      accuracy: loc.accuracy || 5,
+      magneticStrength: reading.total,
+      netStrength: reading.netTotal,
+      category: classification.category !== 'unknown' ? classification.category : 'gold',
+      name: `Titik Pantau Favorit #${countFavorites}`,
+      depthEstimateCm: classification.depthCm,
+      note: `Titik Pantau Favorit ditandai cepat pada fluks ${reading.total.toFixed(1)} µT. Diprioritaskan untuk pemantauan berkala.`,
+      autoSaved: false,
+      isFavorite: true,
+      isPriority: true,
+    };
+
+    setFindings((prev) => [newFavoriteFinding, ...prev]);
+
+    // Record in trail service
+    trailService.recordPoint(
+      loc.lat,
+      loc.lng,
+      loc.accuracy || 5,
+      reading.total,
+      reading.netTotal,
+      sensorManager.getBaseline(),
+      true,
+      { name: newFavoriteFinding.name, category: newFavoriteFinding.category }
+    );
+
+    // Audio chime & vibration
+    audioService.playAlertBeep(true);
+    if ('vibrate' in navigator && settings.vibrationEnabled) {
+      try {
+        const intensity = settings.vibrationIntensity || 'medium';
+        const pattern =
+          intensity === 'light'
+            ? [35, 25, 45]
+            : intensity === 'strong'
+            ? [180, 50, 220, 50, 180]
+            : [100, 40, 150];
+        navigator.vibrate(pattern);
+      } catch {
+        // ignore
+      }
+    }
+
+    try {
+      confetti({
+        particleCount: 40,
+        spread: 70,
+        origin: { y: 0.75 },
+        colors: ['#f43f5e', '#ec4899', '#fb7185', '#eab308'],
+      });
+    } catch {
+      // ignore
+    }
+
+    setRecentNotification({
+      title: '⭐ Quick Pin: Titik Pantau Favorit Disimpan!',
+      message: `${newFavoriteFinding.name} (${loc.lat.toFixed(5)}, ${loc.lng.toFixed(5)}) dicatat & difavoritkan pada peta.`,
+      category: 'gold',
+      time: Date.now(),
+    });
+
+    setTimeout(() => {
+      setRecentNotification(null);
+    }, 5000);
+
+    // Automatic Reverse Geocoding API: menambahkan nama lokasi atau landmark terdekat ke dalam Quick Pin
+    reverseGeocodingService
+      .reverseGeocode(loc.lat, loc.lng)
+      .then((geo) => {
+        if (geo && geo.locationName) {
+          setFindings((prev) =>
+            prev.map((f) => {
+              if (f.id === newFavoriteFinding.id) {
+                const locationBadge = geo.landmark
+                  ? `📍 Landmark: ${geo.landmark} (${geo.locationName})`
+                  : `📍 Lokasi: ${geo.locationName}`;
+                return {
+                  ...f,
+                  locationName: geo.locationName,
+                  note: `${locationBadge} • ${f.note || ''}`,
+                };
+              }
+              return f;
+            })
+          );
+
+          setRecentNotification({
+            title: '⭐ Quick Pin: Lokasi Terdeteksi!',
+            message: `📍 ${geo.locationName} (${newFavoriteFinding.name})`,
+            category: 'gold',
+            time: Date.now(),
+          });
+        }
+      })
+      .catch((err) => {
+        console.warn('Quick Pin auto reverse geocoding error:', err);
+      });
+  }, [userLocation, findings, settings.vibrationEnabled]);
 
   // Tare Zero Calibration
   const handleTareZero = () => {
@@ -987,12 +1218,31 @@ export default function App() {
               <Battery className="w-3.5 h-3.5 text-slate-300" />
             )}
             <span>{batteryState.level}%</span>
-            {batteryState.isPowerSaveActive && (
+            {batteryState.isPowerSaveActive ? (
               <span className="text-[9px] px-1 py-0.2 rounded bg-emerald-400 text-black font-extrabold flex items-center gap-0.5">
                 <Leaf className="w-2.5 h-2.5" />
                 <span>ECO</span>
               </span>
-            )}
+            ) : (settings.adaptiveSamplingEnabled ?? true) ? (
+              <span
+                className={`text-[9px] px-1.5 py-0.2 rounded font-bold font-mono flex items-center gap-0.5 ${
+                  adaptiveSamplingState.motionState === 'STATIONARY'
+                    ? 'bg-amber-500/30 text-amber-200 border border-amber-500/40'
+                    : adaptiveSamplingState.motionState === 'SLOW_MOVE'
+                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                    : 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
+                }`}
+                title={`Smart Battery Adaptive Sampling: ${
+                  adaptiveSamplingState.motionState === 'STATIONARY'
+                    ? 'Pengguna Berhenti (8 Hz • GPS Eco • Hemat ~62%)'
+                    : adaptiveSamplingState.motionState === 'SLOW_MOVE'
+                    ? 'Gerak Lambat/Ayunan Teliti (18 Hz • GPS Seimbang • Hemat ~40%)'
+                    : 'Gerak Cepat (32 Hz • GPS Presisi)'
+                }`}
+              >
+                <span>{adaptiveSamplingState.sensorHz}Hz</span>
+              </span>
+            ) : null}
           </button>
 
           {/* Proximity Pulse Flash LED quick toggle */}
@@ -1221,6 +1471,15 @@ export default function App() {
               onOpenSoilProfiler={() => setIsSoilProfilerOpen(true)}
             />
 
+            {/* Visual Real-time Depth Probability Gauge */}
+            <DepthProbabilityGauge
+              netStrength={currentReading.netTotal}
+              totalStrength={currentReading.total}
+              baseline={baseline}
+              threshold={settings.autoSaveThreshold}
+              onOpenSoilProfiler={() => setIsSoilProfilerOpen(true)}
+            />
+
             {/* Real-time Oscilloscope Waveform Canvas */}
             <WaveformChart
               currentReading={currentReading}
@@ -1260,14 +1519,26 @@ export default function App() {
                 </p>
               </div>
 
-              <button
-                type="button"
-                onClick={handleManualPin}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white rounded-xl text-xs font-mono font-semibold shadow-md transition-all active:scale-95"
-              >
-                <MapPin className="w-3.5 h-3.5" />
-                <span>Tandai Sekarang</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleQuickPinFavorite}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-rose-600 via-pink-600 to-amber-500 hover:from-rose-500 hover:to-amber-400 text-white rounded-xl text-xs font-mono font-bold shadow-md shadow-rose-950/40 border border-rose-400/50 transition-all active:scale-95 group"
+                  title="Quick Pin: Tandai lokasi saat ini dengan satu klik & simpan otomatis sebagai Titik Pantau Favorit"
+                >
+                  <Heart className="w-3.5 h-3.5 fill-current text-white animate-pulse group-hover:scale-125 transition-transform" />
+                  <span>Quick Pin (Titik Pantau)</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleManualPin}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white rounded-xl text-xs font-mono font-semibold shadow-md transition-all active:scale-95"
+                >
+                  <MapPin className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Tandai Manual</span>
+                </button>
+              </div>
             </div>
 
             {/* Target Center Sensor Alarm HUD Banner if active */}
@@ -1287,6 +1558,7 @@ export default function App() {
               onOpenHotspotsModal={() => setIsHotspotsModalOpen(true)}
               onTogglePriority={handleTogglePriority}
               onToggleFavorite={handleToggleFavorite}
+              onQuickPin={handleQuickPinFavorite}
             />
 
             {/* Quick summary below map with D3 toggle & Export launcher */}
@@ -1348,13 +1620,16 @@ export default function App() {
               </div>
             </div>
 
-            {/* D3 Distribution Bar Chart underneath map if enabled */}
+            {/* D3 Distribution Bar Chart & Weekly Trend Line Chart underneath map if enabled */}
             {showMapStats && (
-              <FindingsDistributionChart
-                findings={findings}
-                selectedCategory={selectedCategoryFilter}
-                onSelectCategory={setSelectedCategoryFilter}
-              />
+              <div className="space-y-4">
+                <FindingsDistributionChart
+                  findings={findings}
+                  selectedCategory={selectedCategoryFilter}
+                  onSelectCategory={setSelectedCategoryFilter}
+                />
+                <WeeklyTrendLineChart findings={findings} />
+              </div>
             )}
           </div>
         )}
@@ -1367,6 +1642,9 @@ export default function App() {
               selectedCategory={selectedCategoryFilter}
               onSelectCategory={setSelectedCategoryFilter}
             />
+
+            {/* Weekly Trend Line Chart - Tren Temuan 7 Hari Terakhir */}
+            <WeeklyTrendLineChart findings={findings} />
 
             <FindingsList
               findings={findings}

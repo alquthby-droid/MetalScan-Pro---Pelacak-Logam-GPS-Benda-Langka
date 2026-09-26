@@ -26,8 +26,9 @@ import {
   Eye,
   CloudRain,
 } from 'lucide-react';
-import { DetectorSettings, BatteryState, ThemeMode } from '../types/detector';
+import { DetectorSettings, BatteryState, ThemeMode, VibrationIntensity, AdaptiveSamplingState, MotionActivityState } from '../types/detector';
 import { batteryManager } from '../services/batteryManager';
+import { adaptiveSamplingService } from '../services/adaptiveSamplingService';
 import { PWAInstallButton } from './PWAInstallButton';
 import { geofenceService } from '../services/geofenceService';
 
@@ -50,6 +51,15 @@ export const DetectorSettingsModal: React.FC<DetectorSettingsModalProps> = ({
   onOpenDeployGuide,
   onOpenWeatherModal,
 }) => {
+  const [adaptiveSampling, setAdaptiveSampling] = React.useState<AdaptiveSamplingState>(() =>
+    adaptiveSamplingService.getState()
+  );
+
+  React.useEffect(() => {
+    const unsub = adaptiveSamplingService.subscribe((st) => setAdaptiveSampling(st));
+    return () => unsub();
+  }, []);
+
   if (!isOpen) return null;
 
   return (
@@ -248,24 +258,124 @@ export const DetectorSettingsModal: React.FC<DetectorSettingsModalProps> = ({
             )}
           </div>
 
-          {/* 4. Getaran Haptik */}
-          <div className="bg-slate-950/80 p-4 rounded-2xl border border-slate-800 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Vibrate className="w-4 h-4 text-cyan-400" />
-              <div>
-                <div className="font-bold text-slate-100">Getaran Haptik Android</div>
-                <div className="text-[11px] text-slate-400">Ponsel bergetar saat mendekati logam</div>
+          {/* 4. Getaran Haptik & Pengaturan Intensitas */}
+          <div className="bg-slate-950/80 p-4 rounded-2xl border border-cyan-500/20 shadow-sm space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Vibrate className="w-4 h-4 text-cyan-400" />
+                <div>
+                  <div className="font-bold text-slate-100">Getaran Haptik Android</div>
+                  <div className="text-[11px] text-slate-400">Ponsel bergetar saat mendeteksi anomali logam</div>
+                </div>
               </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={settings.vibrationEnabled}
+                  onChange={(e) => onUpdateSettings({ vibrationEnabled: e.target.checked })}
+                  className="sr-only peer"
+                />
+                <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-cyan-500"></div>
+              </label>
             </div>
-            <label className="relative inline-flex items-center cursor-pointer">
-              <input
-                type="checkbox"
-                checked={settings.vibrationEnabled}
-                onChange={(e) => onUpdateSettings({ vibrationEnabled: e.target.checked })}
-                className="sr-only peer"
-              />
-              <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-cyan-500"></div>
-            </label>
+
+            {settings.vibrationEnabled && (
+              <div className="pt-2 border-t border-slate-800 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-[11px] text-slate-300 font-semibold flex items-center gap-1.5">
+                    <span>Intensitas Getaran:</span>
+                    <span className="text-cyan-400 font-bold uppercase text-[10px]">
+                      {(settings.vibrationIntensity || 'medium') === 'light'
+                        ? 'Ringan (Soft)'
+                        : (settings.vibrationIntensity || 'medium') === 'strong'
+                        ? 'Kuat (Tactical)'
+                        : 'Sedang (Standar)'}
+                    </span>
+                  </span>
+
+                  {/* Tombol Uji / Tes Getaran */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if ('vibrate' in navigator) {
+                        try {
+                          const intensity = settings.vibrationIntensity || 'medium';
+                          if (intensity === 'light') {
+                            navigator.vibrate([25, 20, 25]);
+                          } else if (intensity === 'strong') {
+                            navigator.vibrate([90, 40, 110]);
+                          } else {
+                            navigator.vibrate([45, 30, 45]);
+                          }
+                        } catch {
+                          // ignore
+                        }
+                      }
+                    }}
+                    className="flex items-center gap-1 px-2.5 py-1 rounded-xl bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/40 text-[10px] font-mono font-semibold transition-all active:scale-95"
+                    title="Uji coba getaran pada perangkat ini"
+                  >
+                    <Vibrate className="w-3 h-3 text-cyan-300 animate-pulse" />
+                    <span>Uji Getaran</span>
+                  </button>
+                </div>
+
+                {/* 3 Level Buttons: Ringan, Sedang, Kuat */}
+                <div className="grid grid-cols-3 gap-1.5 font-mono text-xs">
+                  {[
+                    {
+                      id: 'light' as VibrationIntensity,
+                      label: 'Ringan',
+                      sublabel: '20ms • Halus',
+                      desc: 'Nyaman & hening',
+                    },
+                    {
+                      id: 'medium' as VibrationIntensity,
+                      label: 'Sedang',
+                      sublabel: '40ms • Standar',
+                      desc: 'Seimbang harian',
+                    },
+                    {
+                      id: 'strong' as VibrationIntensity,
+                      label: 'Kuat',
+                      sublabel: '80ms • Taktis',
+                      desc: 'Jelas di saku',
+                    },
+                  ].map((level) => {
+                    const isSelected = (settings.vibrationIntensity || 'medium') === level.id;
+                    return (
+                      <button
+                        key={level.id}
+                        type="button"
+                        onClick={() => {
+                          onUpdateSettings({ vibrationIntensity: level.id });
+                          if ('vibrate' in navigator) {
+                            try {
+                              const dur = level.id === 'light' ? 25 : level.id === 'strong' ? 90 : 45;
+                              navigator.vibrate(dur);
+                            } catch {
+                              // ignore
+                            }
+                          }
+                        }}
+                        className={`p-2 rounded-xl border text-center transition-all flex flex-col items-center justify-center gap-0.5 ${
+                          isSelected
+                            ? 'bg-cyan-500/20 text-cyan-200 border-cyan-400 font-bold shadow-md shadow-cyan-950/40 ring-1 ring-cyan-400/40'
+                            : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200 hover:border-slate-700'
+                        }`}
+                      >
+                        <span className="text-[11px] font-bold">{level.label}</span>
+                        <span className="text-[9px] opacity-75 font-sans">{level.sublabel}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <p className="text-[10px] text-slate-400 leading-tight">
+                  Sesuaikan daya impuls motor getar ponsel saat memindai target logam agar pas dengan kenyamanan genggaman atau pemakaian sarung tangan di lapangan.
+                </p>
+              </div>
+            )}
           </div>
 
           {/* 5. Filter Diskriminasi Target */}
@@ -456,7 +566,159 @@ export const DetectorSettingsModal: React.FC<DetectorSettingsModalProps> = ({
             </div>
           </div>
 
-          {/* 7. Calibration Drift Monitor & Environmental Noise Alerts */}
+          {/* 7. Smart Battery Adaptive Sampling (Algoritma Hemat Baterai Dinamis Berbasis Akselerometer) */}
+          <div className="bg-slate-950/80 p-4 rounded-2xl border border-emerald-500/30 space-y-3 shadow-lg shadow-emerald-950/20">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400">
+                  <Zap className="w-4 h-4" />
+                </div>
+                <div>
+                  <div className="font-bold text-slate-100 flex items-center gap-1.5 flex-wrap">
+                    <span>Smart Battery Adaptive Sampling</span>
+                    <span className="text-[9px] px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-mono font-bold">
+                      Akselerometer Auto
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-slate-400">
+                    Dinamis atur frekuensi sensor & GPS sesuai kecepatan gerak pengguna
+                  </div>
+                </div>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                <input
+                  type="checkbox"
+                  checked={settings.adaptiveSamplingEnabled ?? true}
+                  onChange={(e) => {
+                    const nextVal = e.target.checked;
+                    onUpdateSettings({ adaptiveSamplingEnabled: nextVal });
+                    adaptiveSamplingService.setEnabled(nextVal);
+                  }}
+                  className="sr-only peer"
+                />
+                <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-500"></div>
+              </label>
+            </div>
+
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              Saat Anda berhenti memeriksa galian atau bergerak lambat, algoritma otomatis memangkas polling sensor & interval GPS untuk meminimalisir konsumsi baterai hingga <strong>~62%</strong> tanpa kehilangan sensitivitas deteksi.
+            </p>
+
+            {(settings.adaptiveSamplingEnabled ?? true) && (
+              <div className="pt-2 border-t border-slate-800 space-y-2.5 font-mono">
+                {/* Live Motion Status & Frequency Readout */}
+                <div className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 flex flex-col gap-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-slate-400">Status Gerak Terdeteksi:</span>
+                    <span
+                      className={`font-bold px-2 py-0.5 rounded-full text-[10px] flex items-center gap-1.5 ${
+                        adaptiveSampling.motionState === 'STATIONARY'
+                          ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                          : adaptiveSampling.motionState === 'SLOW_MOVE'
+                          ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                          : 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
+                      }`}
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full bg-current animate-ping" />
+                      {adaptiveSampling.motionState === 'STATIONARY'
+                        ? '🛑 Berhenti / Diam di Lokasi'
+                        : adaptiveSampling.motionState === 'SLOW_MOVE'
+                        ? '🚶 Gerak Lambat / Ayunan Teliti'
+                        : '⚡ Gerak Cepat / Transisi Sektor'}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-1.5 text-center text-[10px] pt-1 border-t border-slate-800/80">
+                    <div className="bg-slate-950/70 p-1.5 rounded-lg border border-slate-800">
+                      <div className="text-slate-400 text-[9px]">Polling Sensor</div>
+                      <div className="font-bold text-emerald-300 text-xs mt-0.5">
+                        {adaptiveSampling.sensorHz} Hz
+                      </div>
+                    </div>
+                    <div className="bg-slate-950/70 p-1.5 rounded-lg border border-slate-800">
+                      <div className="text-slate-400 text-[9px]">Siklus GPS</div>
+                      <div className="font-bold text-cyan-300 text-xs mt-0.5">
+                        {adaptiveSampling.gpsProfile === 'eco_standby'
+                          ? '25s (Eco)'
+                          : adaptiveSampling.gpsProfile === 'balanced'
+                          ? '8s (Seimbang)'
+                          : '2s (Presisi)'}
+                      </div>
+                    </div>
+                    <div className="bg-slate-950/70 p-1.5 rounded-lg border border-slate-800">
+                      <div className="text-slate-400 text-[9px]">Efisiensi Baterai</div>
+                      <div className="font-bold text-amber-300 text-xs mt-0.5">
+                        +{adaptiveSampling.estimatedBatterySavingsPercent}% Awet
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Real-time Accelerometer Sensor Feedback */}
+                  <div className="flex items-center justify-between text-[9px] text-slate-400 pt-1">
+                    <span>
+                      Energi Akselerometer: <strong className="text-slate-200">{adaptiveSampling.accelerometerMagnitude} m/s²</strong>
+                    </span>
+                    <span>
+                      Est. Laju: <strong className="text-slate-200">{adaptiveSampling.motionSpeedEstimateMs} m/s</strong>
+                    </span>
+                  </div>
+                </div>
+
+                {/* Simulation / Manual Override Buttons */}
+                <div className="flex items-center justify-between text-[10px] pt-1">
+                  <span className="text-slate-400">Uji Profil Gerak:</span>
+                  <div className="flex gap-1">
+                    <button
+                      type="button"
+                      onClick={() => adaptiveSamplingService.simulateMotion('STATIONARY')}
+                      className={`px-2 py-0.5 rounded border text-[9px] transition-all ${
+                        adaptiveSampling.motionState === 'STATIONARY'
+                          ? 'bg-amber-500/25 border-amber-400 text-amber-200 font-bold'
+                          : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
+                      }`}
+                      title="Simulasikan pengguna sedang berhenti/jongkok di lubang temuan"
+                    >
+                      Diam (8Hz)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => adaptiveSamplingService.simulateMotion('SLOW_MOVE')}
+                      className={`px-2 py-0.5 rounded border text-[9px] transition-all ${
+                        adaptiveSampling.motionState === 'SLOW_MOVE'
+                          ? 'bg-emerald-500/25 border-emerald-400 text-emerald-200 font-bold'
+                          : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
+                      }`}
+                      title="Simulasikan ayunan koil santai teliti"
+                    >
+                      Lambat (18Hz)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => adaptiveSamplingService.simulateMotion('FAST_MOVE')}
+                      className={`px-2 py-0.5 rounded border text-[9px] transition-all ${
+                        adaptiveSampling.motionState === 'FAST_MOVE'
+                          ? 'bg-cyan-500/25 border-cyan-400 text-cyan-200 font-bold'
+                          : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
+                      }`}
+                      title="Simulasikan transisi jalan cepat antar sektor"
+                    >
+                      Cepat (32Hz)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => adaptiveSamplingService.simulateMotion(null)}
+                      className="px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-slate-400 hover:text-slate-200 text-[9px]"
+                      title="Gunakan sensor akselerometer fisik perangkat secara riil"
+                    >
+                      Auto Riil
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* 8. Calibration Drift Monitor & Environmental Noise Alerts */}
           <div className="bg-slate-950/80 p-4 rounded-2xl border border-cyan-500/30 space-y-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">

@@ -1,4 +1,4 @@
-import { BatteryState } from '../types/detector';
+import { BatteryState, AdaptiveSamplingState } from '../types/detector';
 
 type BatteryListener = (state: BatteryState) => void;
 
@@ -91,12 +91,13 @@ export class BatteryManagerService {
   }
 
   /**
-   * Evaluate power save mode according to user settings and environment
+   * Evaluate power save mode according to user settings, adaptive sampling, and environment
    */
   public evaluate(
     batterySaverEnabled: boolean = true,
     batterySaverThreshold: number = 20,
-    forceBatterySaver: boolean = false
+    forceBatterySaver: boolean = false,
+    adaptiveSamplingState?: AdaptiveSamplingState
   ): BatteryState {
     const effectiveLevel = this.simulatedLevel !== null ? this.simulatedLevel : this.level;
     const effectiveCharging = this.simulatedCharging !== null ? this.simulatedCharging : this.charging;
@@ -107,7 +108,7 @@ export class BatteryManagerService {
     // Power save is active if forced OR (enabled and (low battery or screen is off))
     const isPowerSaveActive = forceBatterySaver || (batterySaverEnabled && (isLow || this.isScreenOff));
 
-    // Calculate sensor frequencies
+    // Calculate sensor frequencies & GPS profiles
     let currentMagnetometerHz = 30;
     let gpsMode: 'high_accuracy' | 'battery_saving' | 'standby' = 'high_accuracy';
 
@@ -119,6 +120,15 @@ export class BatteryManagerService {
       // Low battery or force eco: throttle to 6 Hz, low power GPS
       currentMagnetometerHz = 6;
       gpsMode = 'battery_saving';
+    } else if (adaptiveSamplingState && adaptiveSamplingState.enabled) {
+      // Smart Battery Adaptive Sampling active: dynamically tuned by motion speed
+      currentMagnetometerHz = adaptiveSamplingState.sensorHz;
+      gpsMode =
+        adaptiveSamplingState.gpsProfile === 'eco_standby'
+          ? 'battery_saving'
+          : adaptiveSamplingState.gpsProfile === 'balanced'
+          ? 'battery_saving'
+          : 'high_accuracy';
     } else {
       currentMagnetometerHz = 30;
       gpsMode = 'high_accuracy';
@@ -133,6 +143,7 @@ export class BatteryManagerService {
       isPowerSaveActive,
       currentMagnetometerHz,
       gpsMode,
+      adaptiveSamplingState: adaptiveSamplingState || this.currentState.adaptiveSamplingState,
     };
 
     return this.currentState;
